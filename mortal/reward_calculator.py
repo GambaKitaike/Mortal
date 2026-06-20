@@ -2,10 +2,12 @@ import torch
 import numpy as np
 
 class RewardCalculator:
-    def __init__(self, grp=None, pts=None, uniform_init=False):
+    def __init__(self, grp=None, pts=None, uniform_init=False, alpha=1.0, gamma_pt=1.0):
         self.device = torch.device('cpu')
         self.grp = grp.to(self.device).eval()
         self.uniform_init = uniform_init
+        self.alpha = alpha
+        self.gamma_pt = gamma_pt
 
         pts = pts or [3, 1, -1, -3]
         self.pts = torch.tensor(pts, dtype=torch.float64, device=self.device)
@@ -41,3 +43,10 @@ class RewardCalculator:
         seq = np.concatenate((grp_feature[:, 3 + player_id] * 1e4, [final_scores[player_id]]))
         delta_points = seq[1:] - seq[:-1]
         return delta_points
+
+    def calc_delta_blend(self, player_id, grp_feature, rank_by_player, final_scores,
+                         alpha=1.0, gamma_pt=1.0):
+        sotensu = self.calc_delta_points(player_id, grp_feature, final_scores) / 1000.0
+        juni = self.calc_delta_pt(player_id, grp_feature, rank_by_player)
+        assert len(sotensu) == len(juni), f"length mismatch: sotensu={len(sotensu)}, juni={len(juni)}"
+        return alpha * sotensu + gamma_pt * juni
