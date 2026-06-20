@@ -1,0 +1,69 @@
+# Phase 1 production template — replace {{RUNS}} and {{DATA}}
+# resnet 192/40, batch_size 128 (adjust for VRAM on 5060)
+
+[control]
+version = 4
+online = false
+
+state_file = '{{RUNS}}/mortal.pth'
+best_state_file = '{{RUNS}}/best.pth'
+tensorboard_dir = '{{RUNS}}/tb'
+
+device = 'cuda:0'
+enable_cudnn_benchmark = false
+enable_amp = true
+enable_compile = false
+
+batch_size = 128
+opt_step_every = 1
+
+save_every = 400
+test_every = 20000
+submit_every = 400
+
+[dataset]
+globs = ['{{DATA}}/tenhou/2009/**/*.mjson']
+file_index = '{{RUNS}}/file_index.pth'
+file_batch_size = 15
+reserve_ratio = 0.0
+num_workers = 2
+player_names_files = []
+num_epochs = 1
+enable_augmentation = false
+augmented_first = false
+
+[env]
+gamma = 1
+pts = [6.0, 4.0, 2.0, 0.0]
+
+[resnet]
+conv_channels = 192
+num_blocks = 40
+
+[grp]
+state_file = '{{RUNS}}/grp.pth'
+
+[grp.control]
+device = 'cuda:0'
+tensorboard_dir = '{{RUNS}}/grp_log'
+batch_size = 256
+save_every = 2000
+val_steps = 400
+
+[grp.dataset]
+train_globs = ['{{DATA}}/tenhou/2009/**/*.mjson']
+val_globs = ['{{DATA}}/tenhou/2009/**/*.mjson']
+file_index = '{{RUNS}}/grp_file_index.pth'
+file_batch_size = 50
+
+[1v3]
+seed_key = 42
+games_per_iter = 40
+iters = 10
+log_dir = '{{RUNS}}/1v3'
+
+[1v3.challenger]
+state_file = '{{RUNS}}/mortal.pth'
+
+[1v3.champion]
+state_file = '{{DATA}}/tenhou/checkpoints/baseline.pth'
