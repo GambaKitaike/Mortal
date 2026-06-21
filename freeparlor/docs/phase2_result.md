@@ -82,3 +82,62 @@ runs/
   step4_one_vs_three_phase2.log
   check_reward_array_lengths.py  # Step 0 verification (runs/, not committed)
 ```
+
+---
+
+# Phase 2 Production — 192×40 Run (2026-06-21)
+
+## Training
+
+| Item | Value |
+|---|---|
+| ResNet | conv_channels=192, num_blocks=40 |
+| batch_size | 128 |
+| GRP | Phase 1 `grp.pth` reused |
+| Steps | 35,200 (1 offline epoch) |
+| Duration | ~3h08m (07:16–10:24) |
+| GPU | cuda:0 (RTX 5060) |
+| dqn_loss (final) | 15.80 |
+| cql_loss (final) | 0.95 |
+| checkpoint | `runs/mortal.pth`, `runs/best.pth`, `runs/mortal_gen1.pth` |
+
+No NaN/divergence. Loss scale remains higher than Phase 1 rank-reward (dqn 0.427 / cql 0.631) due to free-parlor reward.
+
+## one_vs_three Self-Play (400 games, identical 192×40 model × 4)
+
+| Metric | Value |
+|---|---|
+| avg_rank | 2.490 |
+| avg_pt | +1.13 |
+
+## Playstyle Stats vs Phase 1 (both 192×40)
+
+Phase 1 baseline: rank-reward (`phase1_stats_192x40.md`). Phase 2: free-parlor reward. Same architecture — controlled comparison.
+
+| Metric | Phase 1 | Phase 2 | Δ |
+|---|---:|---:|---:|
+| Win rate (和了率) | 22.27% | 21.38% | −0.9pp |
+| Deal-in rate (放銃率) | 14.31% | 13.98% | −0.3pp |
+| Riichi rate (立直率) | 15.67% | 26.23% | +10.6pp |
+| Call rate (副露率) | 30.39% | 16.97% | −13.4pp |
+| Avg winning Δscore | 5505 | 6827 | +1322 |
+| Ryukyoku rate | 11.26% | 15.45% | +4.2pp |
+
+### Interpretation (192×40)
+
+- **副露↓ / 立直↑ / 平均打点↑** — 64×10 疎通と同方向。アーキテクチャを揃えても報酬差の効果は再現。
+- **放銃率 −0.3pp** — 設計書仮説方向だが効果は小さい。
+- 64×10 比 192×40 の方が副露率差（−13.4pp vs −18.7pp）は穏やか。大モデルは鳴き判断が残る可能性。
+
+## Production Artifacts
+
+```
+runs/
+  mortal.pth                      # Phase 2 192×40 free-parlor reward
+  mortal_gen1.pth
+  champion.pth
+  best.pth
+  mortal_phase2_64x10.pth         # archived 64×10 connectivity ckpt
+  step3_train_phase2_production.log
+  step4_one_vs_three_phase2_production.log
+```
