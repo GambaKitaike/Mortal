@@ -77,38 +77,72 @@ diff  = chip_deltas * 5.0  ✓
 | NaN/発散 | なし |
 | checkpoint | `runs/phase4/beta1_64x10/mortal.pth` |
 
-## β=0 vs β=1 打牌統計
+## 192×40 本番学習 (β=1.0, 1 offline epoch)
 
-**比較条件:**
+| 項目 | 値 |
+|---|---|
+| config | `freeparlor/configs/phase4_chip_beta1_192x40.toml` |
+| アーキ | 192×40 (10,787,456 params) |
+| 学習量 | 35,200 steps (1 epoch, batch=128) |
+| GPU | cuda:0 (RTX 5060) |
+| NaN/発散 | なし |
+| dqn_loss @35200 | 40.10 |
+| cql_loss @35200 | 1.59 |
+| checkpoint | `runs/phase4/beta1_192x40/model.pth` |
 
-- **β=0 参照**: Phase3 `balanced`（192×40, alpha=1, gamma_pt=1, チップ無し）— `phase3_sweep.md`
-- **β=1**: Phase4 64×10 @400steps（アーキテクチャ差あり・自己対戦再評価要）
+## 自己対戦サニティ (同一条件, seed_key=42, 400局)
 
-| 指標 | β=0 (Phase3 balanced) | β=1 (Phase4 64×10) | 差分 |
+champion = challenger 自身（`champion.pth` にモデルコピー）。
+
+| モデル | avg_rank | 備考 |
+|---|---:|---|
+| β=0 (Phase3 balanced) | 2.490 | 10 iter すべて ≈2.5 |
+| β=1 (192×40) | 2.500 | 10 iter すべて 2.500 |
+
+評価 log: `runs/phase4/eval/beta0/1v3`, `runs/phase4/eval/beta1/1v3`
+
+## β=0 vs β=1 打牌統計 (192×40 対照)
+
+**比較条件（交絡排除）:**
+
+- 両方 192×40・1 offline epoch 相当の学習量
+- **β=0**: Phase3 `balanced`（alpha=1, gamma_pt=1, チップ無し）— 今回同一 seed/400局で再評価
+- **β=1**: Phase4 192×40 chip reward（alpha=1, beta=1, gamma_pt=1）
+- 差分は **チップ有無のみ** が設計上の唯一の違い
+
+| 指標 | β=0 (balanced) | β=1 (192×40) | 差分(β1−β0) |
 |---|---:|---:|---:|
-| 和了率 | 21.38% | (要 self-play 再評価) | — |
-| 放銃率 | 13.98% | — | — |
-| 立直率 | 26.23% | — | — |
-| 副露率 | 16.97% | — | — |
-| 平均和了打点 | 6827 | — | — |
-| 流局率 | 15.45% | — | — |
-| avg_rank | 2.490 | — | — |
+| 和了率 | 21.38% | 9.39% | −11.99pp |
+| 放銃率 | 13.98% | 5.73% | −8.24pp |
+| 立直率 | 26.23% | 20.88% | −5.36pp |
+| 副露率 | 16.97% | 0.51% | **−16.46pp** |
+| 平均和了打点 | 6827 | 10033 | **+3206** |
+| 流局率 | 15.45% | 62.63% | +47.19pp |
+| avg_rank (サニティ) | 2.490 | 2.500 | +0.010 |
 
-> 初回 1v3 は champion=`runs/champion.pth`（baseline）のため avg_rank≈3.3 となり無効。config を `phase4/beta1_64x10/champion.pth`（mortal コピー）に修正済み。自己対戦 400 局の再実行後に上表を更新すること。
+**所見:**
 
-## 192×40 本番
-
-未実行（64×10 疎通 OK 後に `phase4_chip_beta1_192x40.toml` で実施予定）。
+- **副露率**: Phase3 素点重視(score_heavy)でも副露は増えなかった（人間データ天井）。β=1 では副露が **16.97% → 0.51%** と激減し、チップ圧で「副露が戻る」どころか門前・高打点待ちへ大きくシフト。
+- **平均和了打点**: 6827 → 10033（+3206）。和了時の打点は大幅上昇（赤・裏・高打点報酬の方向性は出ている）が、和了率自体が半減し流局率 62% と極端な受け入れ方。
+- **avg_rank**: 自己対戦で両方 ≈2.5 — 評価設定は正常。
 
 ## Artifacts
 
 ```
+runs/phase4/beta1_192x40/
+  mortal.pth
+  model.pth
+  best.pth
+  train.log
+  tb/
+runs/phase4/eval/
+  beta0/1v3/   beta0/champion.pth
+  beta1/1v3/   beta1/champion.pth
 runs/phase4/beta1_64x10/
   mortal.pth
   champion.pth
   train.log
   tb/
-  1v3/          # 初回評価（要再実行）
 data/tenhou/chips/*.npz
 freeparlor/scripts/preprocess_chips.py
 freeparlor/scripts/verify_agari_detail.py
