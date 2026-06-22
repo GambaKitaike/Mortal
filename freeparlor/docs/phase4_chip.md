@@ -149,3 +149,90 @@ freeparlor/scripts/verify_agari_detail.py
 ```
 
 Config templates: `freeparlor/configs/phase4_chip_*.toml`
+
+## β スイープ (192×40, alpha=1, gamma_pt=1, chip_value=5.0)
+
+### スイープ点
+
+| name | beta | 学習 | model |
+|---|---:|---|---|
+| beta0 | 0.0 | 既存(Phase3 balanced) | `runs/sweep/balanced/model.pth` |
+| beta0_1 | 0.1 | 新規 | `runs/phase4/beta0_1_192x40/model.pth` |
+| beta0_3 | 0.3 | 新規 | `runs/phase4/beta0_3_192x40/model.pth` |
+| beta0_5 | 0.5 | 新規 | `runs/phase4/beta0_5_192x40/model.pth` |
+| beta1 | 1.0 | 既存(Phase4本番) | `runs/phase4/beta1_192x40/model.pth` |
+
+共通: 192×40, data=2009, 1 epoch=35,200 steps, pts=[35,5,-15,-25]
+
+### 新規3本 学習結果
+
+| name | beta | dqn_loss | cql_loss | NaN/発散 |
+|---|---:|---:|---:|---|
+| beta0_1 | 0.1 | 19.33 | 0.96 | なし |
+| beta0_3 | 0.3 | 22.22 | 0.99 | なし |
+| beta0_5 | 0.5 | 26.78 | 1.05 | なし |
+
+参考: beta1 dqn=40.10 / cql=1.59
+
+### 評価 (同一条件, seed_key=42, 400局)
+
+champion = challenger 自身。log_dir: `runs/phase4/sweep_eval/<name>/1v3/`
+
+| Item | Value |
+|---|---|
+| seed_key | 42 |
+| games_per_iter | 40 |
+| iters | 10 |
+| total games | 400 / model |
+
+### β カーブ比較表
+
+| 指標 | β=0 | 0.1 | 0.3 | 0.5 | 1.0 |
+|---|---:|---:|---:|---:|---:|
+| 和了率 | 21.38% | 20.12% | 20.61% | 19.59% | 9.39% |
+| 放銃率 | 13.98% | 13.31% | 13.07% | 12.66% | 5.73% |
+| 立直率 | 26.23% | 29.71% | 26.72% | 31.49% | 20.88% |
+| 副露率 | 16.97% | 11.56% | 13.67% | 7.42% | 0.51% |
+| 平均和了打点 | 6827 | 7361 | 6974 | 7961 | 10033 |
+| 流局率 | 15.45% | 19.95% | 18.58% | 22.75% | 62.63% |
+| avg_rank (sanity) | 2.490 | 2.505 | 2.498 | 2.500 | 2.500 |
+
+Tool: `libriichi.stat.Stat.from_dir(log_dir, 'mortal')`
+
+### 所見 — β vs 打牌統計
+
+**単調性:**
+
+- **放銃率↓・平均打点↑** — β 増加にほぼ単調 (6827→10033)。チップ報酬の「高打点志向」は全 β 域で一貫。
+- **和了率・副露率・流局率** — **厳密単調ではない** (例: β=0.3 の和了率 20.61% > β=0.1 の 20.12%、副露率 13.67% > 11.56%)。ただし **β=0.5 以降で崩壊方向が加速** し、β=1.0 で断崖。
+- **立直率** — β=0.5 でピーク (31.5%) 後、β=1.0 で 20.9% に急落。高 β では「立直待ち」自体も放棄される。
+
+**健全域の境界:**
+
+| β 域 | 流局率 | 和了率 | 副露率 | 判定 |
+|---|---:|---:|---:|---|
+| 0〜0.3 | 15〜20% | 20%前後 | 12〜17% | **健全** — Phase3 balanced に近い打牌 |
+| 0.5 | 22.75% | 19.59% | 7.42% | **境界** — 副露半減・流局↑。崩壊の前兆 |
+| 1.0 | 62.63% | 9.39% | 0.51% | **崩壊** — 門前超高打点待ち・和了半減 |
+
+**β=1.0 崩壊に対する閾値:**
+
+- **β≤0.3** が「正常な打牌」(流局15〜20%, 和了20%前後, 副露が生きている) を保つ閾値。**β=0.3 が最も balanced に近い** (和了20.6%, 流局18.6%, 副露13.7%)。
+- **β=0.5** から副露が 7% 台・流局 23% と明確に悪化。**実用上の上限は β≈0.3**。
+- β=1.0 の流局62%/副露0.5%/和了9% は、β=0.5→1.0 の間で非線形に跳ぶ。チップ報酬の全量 (β=1.0) は学習安定性 (loss 未発散) と両立しても、打牌は実用域外。
+
+## Artifacts (β sweep)
+
+```
+runs/phase4/
+  beta0_1_192x40/  model.pth, train.log, tb/
+  beta0_3_192x40/  model.pth, train.log, tb/
+  beta0_5_192x40/  model.pth, train.log, tb/
+  sweep_eval/
+    beta0/, beta0_1/, beta0_3/, beta0_5/, beta1/
+      champion.pth, 1v3/, 1v3.log
+  sweep_eval_all.log
+  sweep_stats.log
+```
+
+Config templates: `freeparlor/configs/phase4_chip_beta0_*_192x40.toml`, `phase4_sweep_eval_beta*.toml`
