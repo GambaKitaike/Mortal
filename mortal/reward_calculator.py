@@ -45,8 +45,14 @@ class RewardCalculator:
         return delta_points
 
     def calc_delta_blend(self, player_id, grp_feature, rank_by_player, final_scores,
-                         alpha=1.0, gamma_pt=1.0):
+                         alpha=1.0, gamma_pt=1.0, chip_deltas=None, beta=0.0, chip_value=5.0):
         sotensu = self.calc_delta_points(player_id, grp_feature, final_scores) / 1000.0
         juni = self.calc_delta_pt(player_id, grp_feature, rank_by_player)
         assert len(sotensu) == len(juni), f"length mismatch: sotensu={len(sotensu)}, juni={len(juni)}"
-        return alpha * sotensu + gamma_pt * juni
+        reward = alpha * sotensu + gamma_pt * juni
+        if chip_deltas is not None:
+            assert len(chip_deltas) == len(reward), (
+                f"length mismatch: chip_deltas={len(chip_deltas)}, reward={len(reward)}"
+            )
+            reward = reward + beta * chip_deltas * chip_value
+        return reward

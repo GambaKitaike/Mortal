@@ -1,5 +1,5 @@
-use super::{PlayerState, SinglePlayerTables};
-use crate::algo::agari::AgariCalculator;
+use super::{AgariDetail, PlayerState, SinglePlayerTables};
+use crate::algo::agari::{Agari, AgariCalculator};
 use crate::algo::point::Point;
 use crate::algo::shanten;
 use crate::algo::sp::{InitState, SPCalculator};
@@ -459,6 +459,138 @@ impl PlayerState {
             .context("not a hora hand")?;
 
         Ok(agari.point(self.oya == 0))
+    }
+
+    /// Like `agari_points`, but also returns chip-relevant breakdown fields.
+    pub fn agari_detail(&self, is_ron: bool, ura_indicators: &[Tile]) -> Result<AgariDetail> {
+        ensure!(
+            is_ron && self.last_cans.can_ron_agari || self.last_cans.can_tsumo_agari,
+            "cannot agari"
+        );
+
+        if !is_ron && self.can_w_riichi {
+            let point = Point::yakuman(self.oya == 0, 1);
+            let winning_tile = self
+                .last_self_tsumo
+                .context("cannot find the winning tile")?;
+            return Ok(AgariDetail {
+                point: point.tsumo_total(self.oya == 0),
+                fu: 0,
+                han: 0,
+                yakuman: 1,
+                ippatsu: self.at_ippatsu,
+                num_aka: self.count_num_aka(winning_tile, false),
+                num_ura: 0,
+                is_tsumo: true,
+            });
+        }
+
+        let winning_tile = if is_ron {
+            self.last_kawa_tile
+        } else {
+            self.last_self_tsumo
+        }
+        .context("cannot find the winning tile")?;
+
+        let additional_hans = if is_ron {
+            [
+                self.riichi_accepted[0],
+                self.is_w_riichi,
+                self.at_ippatsu,
+                self.tiles_left == 0,
+                self.chankan_chance.is_some(),
+            ]
+            .iter()
+            .filter(|&&b| b)
+            .count() as u8
+        } else {
+            [
+                self.riichi_accepted[0],
+                self.is_w_riichi,
+                self.at_ippatsu,
+                self.is_menzen,
+                self.tiles_left == 0 && !self.at_rinshan,
+                self.at_rinshan,
+            ]
+            .iter()
+            .filter(|&&b| b)
+            .count() as u8
+        };
+
+        let mut tehai = self.tehai;
+        let mut final_doras_owned = self.doras_owned[0];
+        if is_ron {
+            let tid = winning_tile.deaka().as_usize();
+            tehai[tid] += 1;
+            final_doras_owned += self.dora_factor[tid];
+            if winning_tile.is_aka() {
+                final_doras_owned += 1;
+            };
+        }
+
+        let mut num_ura = 0u8;
+        if self.riichi_accepted[0] {
+            num_ura = ura_indicators
+                .iter()
+                .map(|&ura| {
+                    let next = ura.next();
+                    let mut count = tehai[next.as_usize()];
+                    if self.ankan_overview[0].contains(&next) {
+                        count += 4;
+                    }
+                    count
+                })
+                .sum();
+            final_doras_owned += num_ura;
+        }
+
+        let agari_calc = AgariCalculator {
+            tehai: &tehai,
+            is_menzen: self.is_menzen,
+            chis: &self.chis,
+            pons: &self.pons,
+            minkans: &self.minkans,
+            ankans: &self.ankans,
+            bakaze: self.bakaze.as_u8(),
+            jikaze: self.jikaze.as_u8(),
+            winning_tile: winning_tile.deaka().as_u8(),
+            is_ron,
+        };
+        let agari = agari_calc
+            .agari(additional_hans, final_doras_owned)
+            .context("not a hora hand")?;
+
+        let point = agari.point(self.oya == 0);
+        let (fu, han, yakuman) = match agari {
+            Agari::Normal { fu, han } => (fu, han, 0),
+            Agari::Yakuman(count) => (0, 0, count),
+        };
+
+        Ok(AgariDetail {
+            point: if is_ron {
+                point.ron
+            } else {
+                point.tsumo_total(self.oya == 0)
+            },
+            fu,
+            han,
+            yakuman,
+            ippatsu: self.at_ippatsu,
+            num_aka: self.count_num_aka(winning_tile, is_ron),
+            num_ura,
+            is_tsumo: !is_ron,
+        })
+    }
+
+    fn count_num_aka(&self, winning_tile: Tile, is_ron: bool) -> u8 {
+        let mut count = self.akas_in_hand.iter().filter(|&&b| b).count() as u8;
+        for fuuro in &self.fuuro_overview[0] {
+            count += fuuro.iter().filter(|t| t.is_aka()).count() as u8;
+        }
+        if is_ron && winning_tile.is_aka() {
+            count += 1;
+        }
+        count
     }
 
     /// Calculate the actual shanten at this point. Unlike `self.shanten`, this

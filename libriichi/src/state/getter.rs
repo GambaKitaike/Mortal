@@ -1,7 +1,9 @@
 use super::{ActionCandidate, PlayerState};
 use crate::tile::Tile;
 
+use anyhow::{Context, Result};
 use pyo3::prelude::*;
+use std::str::FromStr;
 
 #[pymethods]
 impl PlayerState {
@@ -152,6 +154,16 @@ impl PlayerState {
     #[must_use]
     pub const fn at_furiten(&self) -> bool {
         self.at_furiten
+    }
+
+    /// Returns chip-relevant agari breakdown. Call immediately before Hora update.
+    #[pyo3(name = "agari_detail")]
+    fn agari_detail_py(&self, is_ron: bool, ura_indicators: Vec<String>) -> Result<super::AgariDetail> {
+        let ura: Vec<Tile> = ura_indicators
+            .iter()
+            .map(|s| Tile::from_str(s).with_context(|| format!("invalid tile: {s}")))
+            .collect::<Result<_>>()?;
+        self.agari_detail(is_ron, &ura)
     }
 }
 

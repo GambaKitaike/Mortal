@@ -1,6 +1,7 @@
 import random
 import torch
 import numpy as np
+from pathlib import Path
 from torch.utils.data import IterableDataset
 from model import GRP
 from reward_calculator import RewardCalculator
@@ -46,6 +47,10 @@ class FileDatasetsIter(IterableDataset):
             alpha=config['env'].get('alpha', 1.0),
             gamma_pt=config['env'].get('gamma_pt', 1.0),
         )
+        self.beta = config['env'].get('beta', 0.0)
+        self.chip_value = config['env'].get('chip_value', 5.0)
+        chip_dir = config['env'].get('chip_dir', '/home/gamba/mahjong/data/tenhou/chips')
+        self.chip_dir = Path(chip_dir)
 
         for _ in range(self.num_epochs):
             yield from self.load_files(self.augmented_first)
@@ -81,9 +86,20 @@ class FileDatasetsIter(IterableDataset):
         yield from self.buffer
         self.buffer.clear()
 
+    def load_chip_deltas(self, file_path, player_id, n_kyoku):
+        chip_path = self.chip_dir / f"{Path(file_path).name}.npz"
+        if not chip_path.exists():
+            return np.zeros(n_kyoku, dtype=np.float64)
+        chips = np.load(chip_path)['chips']
+        if chips.shape[0] < n_kyoku:
+            padded = np.zeros((n_kyoku, 4), dtype=np.float64)
+            padded[:chips.shape[0]] = chips
+            chips = padded
+        return chips[:n_kyoku, player_id].astype(np.float64)
+
     def populate_buffer(self, file_list):
         data = self.loader.load_gz_log_files(file_list)
-        for file in data:
+        for file_path, file in zip(file_list, data):
             for game in file:
                 # per move
                 obs = game.take_obs()
@@ -104,9 +120,11 @@ class FileDatasetsIter(IterableDataset):
                 grp_feature = grp.take_feature()
                 rank_by_player = grp.take_rank_by_player()
                 final_scores = grp.take_final_scores()
+                chip_deltas = self.load_chip_deltas(file_path, player_id, len(grp_feature))
                 kyoku_rewards = self.reward_calc.calc_delta_blend(
                     player_id, grp_feature, rank_by_player, final_scores,
                     alpha=self.reward_calc.alpha, gamma_pt=self.reward_calc.gamma_pt,
+                    chip_deltas=chip_deltas, beta=self.beta, chip_value=self.chip_value,
                 )
                 assert len(kyoku_rewards) >= at_kyoku[-1] + 1 # usually they are equal, unless there is no action in the last kyoku
                 scores_seq = np.concatenate((grp_feature[:, 3:] * 1e4, [final_scores]))

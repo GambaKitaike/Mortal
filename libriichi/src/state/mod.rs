@@ -1,5 +1,6 @@
 mod action;
 mod agent_helper;
+mod agari_detail;
 mod getter;
 mod item;
 mod obs_repr;
@@ -12,6 +13,7 @@ mod test;
 
 use crate::py_helper::add_submodule;
 pub use action::ActionCandidate;
+pub use agari_detail::AgariDetail;
 pub use player_state::PlayerState;
 pub use sp_tables::SinglePlayerTables;
 
@@ -24,6 +26,7 @@ pub(crate) fn register_module(
 ) -> PyResult<()> {
     let m = PyModule::new(py, "state")?;
     m.add_class::<ActionCandidate>()?;
+    m.add_class::<AgariDetail>()?;
     m.add_class::<PlayerState>()?;
     add_submodule(py, prefix, super_mod, &m)
 }
