@@ -49,6 +49,8 @@ class FileDatasetsIter(IterableDataset):
         )
         self.beta = config['env'].get('beta', 0.0)
         self.chip_value = config['env'].get('chip_value', 5.0)
+        self.lambda_opp = config['env'].get('lambda_opp', 0.0)
+        self.noten_factor = config['env'].get('noten_factor', 0.0)
         chip_dir = config['env'].get('chip_dir', '/home/gamba/mahjong/data/tenhou/chips')
         self.chip_dir = Path(chip_dir)
 
@@ -97,6 +99,30 @@ class FileDatasetsIter(IterableDataset):
             chips = padded
         return chips[:n_kyoku, player_id].astype(np.float64)
 
+    def load_kyoku_probe_arrays(self, file_path, player_id, n_kyoku):
+        chip_path = self.chip_dir / f"{Path(file_path).name}.npz"
+        keys = ('aka_held', 'tenpai_end', 'won', 'dealt_in')
+        defaults = {
+            'aka_held': np.int16,
+            'tenpai_end': np.int8,
+            'won': np.int8,
+            'dealt_in': np.int8,
+        }
+        out = {k: np.zeros(n_kyoku, dtype=defaults[k]) for k in keys}
+        if not chip_path.exists():
+            return out
+        with np.load(chip_path) as data:
+            for k in keys:
+                if k not in data:
+                    continue
+                arr = data[k]
+                if arr.shape[0] < n_kyoku:
+                    padded = np.zeros((n_kyoku, 4), dtype=arr.dtype)
+                    padded[:arr.shape[0]] = arr
+                    arr = padded
+                out[k] = arr[:n_kyoku, player_id]
+        return out
+
     def populate_buffer(self, file_list):
         data = self.loader.load_gz_log_files(file_list)
         for file_path, file in zip(file_list, data):
@@ -121,10 +147,14 @@ class FileDatasetsIter(IterableDataset):
                 rank_by_player = grp.take_rank_by_player()
                 final_scores = grp.take_final_scores()
                 chip_deltas = self.load_chip_deltas(file_path, player_id, len(grp_feature))
+                probe = self.load_kyoku_probe_arrays(file_path, player_id, len(grp_feature))
                 kyoku_rewards = self.reward_calc.calc_delta_blend(
                     player_id, grp_feature, rank_by_player, final_scores,
                     alpha=self.reward_calc.alpha, gamma_pt=self.reward_calc.gamma_pt,
                     chip_deltas=chip_deltas, beta=self.beta, chip_value=self.chip_value,
+                    aka_held=probe['aka_held'], tenpai_end=probe['tenpai_end'],
+                    won=probe['won'], dealt_in=probe['dealt_in'],
+                    lambda_opp=self.lambda_opp, noten_factor=self.noten_factor,
                 )
                 assert len(kyoku_rewards) >= at_kyoku[-1] + 1 # usually they are equal, unless there is no action in the last kyoku
                 scores_seq = np.concatenate((grp_feature[:, 3:] * 1e4, [final_scores]))

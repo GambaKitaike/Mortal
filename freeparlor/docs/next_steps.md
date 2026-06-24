@@ -63,16 +63,28 @@ AI が赤ドラを持っても鳴かない原因は次のどれか:
 
 ---
 
-## 4. 次の打ち手 (A) — 取りこぼし損失の設計論点（未着手）
+## 4. 次の打ち手 (A) — 取りこぼし損失プローブ ★実装済み
 
-### 方針
-チップ期待値を陽に計算せず、**「赤を持って流局した実績」にマイナスを与え、機会損失は Q値（価値関数）に学ばせる**。順位点が最終着順を差分で配るのと同じ発想。
+**結果 md:** `freeparlor/docs/phase4d_aka_opp_probe.md`
 
-### 論点
-- **条件**: テンパイ時の赤持ち非和了を強く罰する（実感として、テンパイ赤持ちで押さないのは相当）。テンパイ前はグレー。
-- **大きさ**: 赤枚数 × ?（`chip_value=5.0` との比は要実験）。
-- **例外**: 相手リーチ時は、押すとこちらが裏/赤でチップを払う側になりうる → 罰を緩める/外す検討。
-- **過剰反応の注意**: 罰を強くしすぎると「赤を持ったら無理上がり」になる。さじ加減が肝。
+### 実装概要
+per-kyoku に opp 項を追加（`lambda_opp=0` で現状再現）。`train.py` 不変更。
+
+```
+opp = -β · lambda_opp · chip_value · aka_held · w · fire
+fire = 非和了 & 非放銃 & 赤保持
+w    = テンパイなら 1.0、それ以外 noten_factor
+```
+
+- 前処理: npz に `aka_held`, `tenpai_end`, `won`, `dealt_in` を追加（6897 files 再生成済み）
+- PlayerState: 既存 `akas_in_hand` / `shanten` を使用（Rust 改修なし）
+- サニティ: `aka_held>0` 37.6%, fire(テンパイ付き) 6.8%
+
+### 設計論点（実験時の参考）
+- **条件**: テンパイ時の赤持ち非和了を強く罰する（`noten_factor=0` が既定）。テンパイ前はグレー。
+- **大きさ**: `lambda_opp` × 赤枚数 × `chip_value`（要スイープ）。
+- **例外**: 相手リーチ時の罰緩和は未実装。
+- **過剰反応の注意**: 罰を強くしすぎると「赤を持ったら無理上がり」になる。
 
 ### 評価基準
 取りこぼし損失を入れた後、**AI の赤持ち副露Δが人間の +2.81pp に近づくか**（初めて「人間」という外部基準が使える）。
@@ -94,7 +106,8 @@ AI が赤ドラを持っても鳴かない原因は次のどれか:
 3. `freeparlor/docs/phase4_chip.md` — チップ報酬・β スイープ
 4. `freeparlor/docs/phase4_aka_conditional.md` — AI の赤条件別
 5. `freeparlor/docs/phase4c_human_aka_conditional.md` — 人間 vs AI 比較（仮説C）
-6. `freeparlor/docs/next_steps.md` — 本ファイル
+6. `freeparlor/docs/phase4d_aka_opp_probe.md` — 取りこぼし損失プローブ（実装・サニティ）
+7. `freeparlor/docs/next_steps.md` — 本ファイル
 
 ---
 
