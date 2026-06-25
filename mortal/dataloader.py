@@ -1,12 +1,88 @@
+import gzip
+import json
 import random
 import torch
 import numpy as np
+from collections import defaultdict
 from pathlib import Path
 from torch.utils.data import IterableDataset
 from model import GRP
 from reward_calculator import RewardCalculator
 from libriichi.dataset import GameplayLoader
 from config import config
+
+
+def open_log(path):
+    path = Path(path)
+    with open(path, 'rb') as f:
+        magic = f.read(2)
+    if magic == b'\x1f\x8b':
+        return gzip.open(path, 'rt', encoding='utf-8')
+    return open(path, 'rt', encoding='utf-8')
+
+
+def get_hora_chip_delta(ev):
+    meta = ev.get('meta') or {}
+    if 'chip_delta' in meta:
+        return meta['chip_delta']
+    return ev.get('chip_delta')
+
+
+def load_kyoku_hora_r_chip(file_path, player_id):
+    """Sum hora meta.chip_delta[player_id] per kyoku (transport only; see assign_r_chip)."""
+    per_kyoku = defaultdict(float)
+    try:
+        with open_log(file_path) as f:
+            kyoku_idx = -1
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                ev = json.loads(line)
+                if ev.get('type') == 'start_kyoku':
+                    kyoku_idx += 1
+                elif ev.get('type') == 'hora' and kyoku_idx >= 0:
+                    chip_delta = get_hora_chip_delta(ev)
+                    if chip_delta is not None:
+                        per_kyoku[kyoku_idx] += chip_delta[player_id]
+    except OSError:
+        pass
+    return dict(per_kyoku)
+
+
+def assign_r_chip_to_trainee_final_moves(game_size, at_kyoku, kyoku_hora_r_chip):
+    """Attribute each kyoku's summed hora chip_delta to the trainee's last move in that kyoku."""
+    r_chip = np.zeros(game_size, dtype=np.float32)
+    last_idx_by_kyoku = {}
+    for i in range(game_size):
+        last_idx_by_kyoku[at_kyoku[i]] = i
+    for kyoku, idx in last_idx_by_kyoku.items():
+        r_chip[idx] = kyoku_hora_r_chip.get(kyoku, 0.0)
+    return r_chip
+
+
+def build_td_transitions(obs, masks, at_kyoku, dones):
+    """Adjacent (s,a,r,s',done) pairing within kyoku. n-step (n=3) aggregation is layer 3."""
+    game_size = len(obs)
+    next_obs = []
+    next_masks = []
+    done_chip = []
+    for i in range(game_size):
+        has_next = (
+            i + 1 < game_size
+            and at_kyoku[i + 1] == at_kyoku[i]
+            and not dones[i]
+        )
+        if has_next:
+            next_obs.append(obs[i + 1])
+            next_masks.append(masks[i + 1])
+            done_chip.append(0)
+        else:
+            next_obs.append(np.zeros_like(obs[i]))
+            next_masks.append(np.zeros_like(masks[i], dtype=bool))
+            done_chip.append(1)
+    return next_obs, next_masks, done_chip
+
 
 class FileDatasetsIter(IterableDataset):
     def __init__(
@@ -166,6 +242,14 @@ class FileDatasetsIter(IterableDataset):
                     if not dones[i]:
                         steps_to_done[i] = steps_to_done[i + 1] + int(apply_gamma[i])
 
+                kyoku_hora_r_chip = load_kyoku_hora_r_chip(file_path, player_id)
+                r_chip = assign_r_chip_to_trainee_final_moves(
+                    game_size, at_kyoku, kyoku_hora_r_chip,
+                )
+                next_obs, next_masks, done_chip = build_td_transitions(
+                    obs, masks, at_kyoku, dones,
+                )
+
                 for i in range(game_size):
                     entry = [
                         obs[i],
@@ -177,6 +261,12 @@ class FileDatasetsIter(IterableDataset):
                     ]
                     if self.oracle:
                         entry.insert(1, invisible_obs[i])
+                    entry.extend([
+                        next_obs[i],
+                        next_masks[i],
+                        done_chip[i],
+                        r_chip[i],
+                    ])
                     self.buffer.append(entry)
 
     def __iter__(self):

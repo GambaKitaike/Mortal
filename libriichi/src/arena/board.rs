@@ -1,7 +1,8 @@
 use super::result::KyokuResult;
 use crate::array::Simple2DArray;
 use crate::consts::oracle_obs_shape;
-use crate::mjai::{Event, EventExt};
+use crate::mjai::{Event, EventExt, Metadata};
+use crate::state::AgariDetail;
 use crate::state::PlayerState;
 use crate::tile::Tile;
 use crate::vec_ops::vec_add_assign;
@@ -363,6 +364,37 @@ impl BoardState {
         Ok(())
     }
 
+    fn hora_chip_delta(&self, actor: u8, target: u8, is_ron: bool, ura_indicators: &[Tile]) -> Option<[i8; 4]> {
+        self.player_states[actor as usize]
+            .agari_detail(is_ron, ura_indicators)
+            .ok()
+            .map(|detail: AgariDetail| detail.chip_deltas(actor, target))
+    }
+
+    fn add_log_hora(
+        &mut self,
+        actor: u8,
+        target: u8,
+        deltas: [i32; 4],
+        ura_markers: Vec<Tile>,
+        is_ron: bool,
+        ura_indicators: &[Tile],
+    ) {
+        let hora = Event::Hora {
+            actor,
+            target,
+            deltas: Some(deltas),
+            ura_markers: Some(ura_markers),
+        };
+        let meta = self
+            .hora_chip_delta(actor, target, is_ron, ura_indicators)
+            .map(|chip_delta| Metadata {
+                chip_delta: Some(chip_delta),
+                ..Default::default()
+            });
+        self.add_log(EventExt { event: hora, meta });
+    }
+
     fn handle_hora(
         &mut self,
         single_actor: u8,
@@ -426,13 +458,14 @@ impl BoardState {
                         Default::default()
                     };
 
-                    let hora = Event::Hora {
-                        actor: actor as u8,
-                        target: single_target,
-                        deltas: Some(deltas),
-                        ura_markers: Some(ura_markers),
-                    };
-                    self.add_log_no_meta(hora);
+                    self.add_log_hora(
+                        actor as u8,
+                        single_target,
+                        deltas,
+                        ura_markers,
+                        true,
+                        &ura_indicators,
+                    );
                     // No need to broadcast
                 });
             return Ok(());
@@ -455,18 +488,19 @@ impl BoardState {
 
         vec_add_assign(&mut self.kyoku_deltas, &deltas);
         let ura_markers = if self.player_states[single_actor as usize].self_riichi_accepted() {
-            ura_indicators
+            ura_indicators.clone()
         } else {
             Default::default()
         };
 
-        let hora = Event::Hora {
-            actor: single_actor,
-            target: single_target,
-            deltas: Some(deltas),
-            ura_markers: Some(ura_markers),
-        };
-        self.add_log_no_meta(hora);
+        self.add_log_hora(
+            single_actor,
+            single_target,
+            deltas,
+            ura_markers,
+            false,
+            &ura_indicators,
+        );
         // No need to broadcast
 
         Ok(())

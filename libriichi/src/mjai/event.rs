@@ -147,6 +147,8 @@ pub struct Metadata {
     pub shanten: Option<i8>,
     pub at_furiten: Option<bool>,
     pub kan_select: Option<Box<Metadata>>,
+    /// Per-seat net chip count for this hora (winner +, losers -).
+    pub chip_delta: Option<[i8; 4]>,
 }
 
 #[derive(Serialize, Deserialize)]
