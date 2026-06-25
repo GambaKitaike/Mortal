@@ -24,7 +24,7 @@ class TestPlayer:
         stable_mortal = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks).eval()
         stable_dqn = DQN(version=version).eval()
         stable_mortal.load_state_dict(state['mortal'])
-        stable_dqn.load_state_dict(state['current_dqn'])
+        stable_dqn.load_state_dict(state['current_dqn'], strict=False)
         if baseline_cfg['enable_compile']:
             stable_mortal.compile()
             stable_dqn.compile()
@@ -41,8 +41,31 @@ class TestPlayer:
         )
         self.chal_version = config['control']['version']
         self.log_dir = path.abspath(config['test_play']['log_dir'])
+        self._last_chip_realize = None
 
-    def test_play(self, seed_count, mortal, dqn, device):
+    def chip_realize_stats(self):
+        return self._last_chip_realize
+
+    def _compute_chip_realize(self, log_dir):
+        try:
+            import sys
+            from pathlib import Path
+            scripts = Path(__file__).resolve().parents[1] / 'freeparlor' / 'scripts'
+            if str(scripts) not in sys.path:
+                sys.path.insert(0, str(scripts))
+            from analyze_chip_realize import analyze_eval_dir
+            agg = analyze_eval_dir(Path(log_dir))
+            if agg.aka_held_kyoku == 0:
+                return None
+            return {
+                'chip_realize_rate': agg.chip_realize / agg.aka_held_kyoku,
+                'call_win_rate': agg.call_win / agg.aka_held_kyoku,
+            }
+        except Exception as ex:
+            logging.warning(f'chip_realize stats skipped: {ex}')
+            return None
+
+    def test_play(self, seed_count, mortal, dqn, device, beta_sel=0.0):
         torch.backends.cudnn.benchmark = False
         engine_chal = MortalEngine(
             mortal,
@@ -51,6 +74,7 @@ class TestPlayer:
             version = self.chal_version,
             device = device,
             enable_amp = True,
+            beta_sel = beta_sel,
             name = 'mortal',
         )
 
@@ -69,6 +93,7 @@ class TestPlayer:
         )
 
         stat = Stat.from_dir(self.log_dir, 'mortal')
+        self._last_chip_realize = self._compute_chip_realize(self.log_dir)
         torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
         return stat
 
@@ -85,7 +110,7 @@ class TrainPlayer:
         stable_mortal = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks).eval()
         stable_dqn = DQN(version=version).eval()
         stable_mortal.load_state_dict(state['mortal'])
-        stable_dqn.load_state_dict(state['current_dqn'])
+        stable_dqn.load_state_dict(state['current_dqn'], strict=False)
         if baseline_cfg['enable_compile']:
             stable_mortal.compile()
             stable_dqn.compile()
@@ -117,7 +142,7 @@ class TrainPlayer:
         self.repeats = cfg['repeats']
         self.repeat_counter = 0
 
-    def train_play(self, mortal, dqn, device):
+    def train_play(self, mortal, dqn, device, beta_sel=0.0):
         torch.backends.cudnn.benchmark = False
         engine_chal = MortalEngine(
             mortal,
@@ -129,6 +154,7 @@ class TrainPlayer:
             top_p = self.top_p,
             device = device,
             enable_amp = True,
+            beta_sel = beta_sel,
             name = 'trainee',
         )
 

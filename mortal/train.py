@@ -21,9 +21,9 @@ def train():
     from torch.utils.tensorboard import SummaryWriter
     from common import submit_param, parameter_count, drain, filtered_trimmed_lines, tqdm
     from player import TestPlayer
-    from dataloader import FileDatasetsIter, worker_init_fn
+    from dataloader import FileDatasetsIter, worker_init_fn, make_collate_fn
     from lr_scheduler import LinearWarmUpCosineAnnealingLR
-    from model import Brain, DQN, AuxNet
+    from model import Brain, DQN, AuxNet, ChipDQNTarget, q_total
     from libriichi.consts import obs_shape
     from config import config
 
@@ -48,6 +48,13 @@ def train():
 
     pts = config['env']['pts']
     gamma = config['env']['gamma']
+    beta_sel_max = config['env']['beta_sel_max']
+    beta_sel_warmup_steps = config['env']['beta_sel_warmup_steps']
+    beta_sel_ramp_steps = config['env']['beta_sel_ramp_steps']
+    chip_n_step = config['env']['chip_n_step']
+    chip_target_tau = config['env']['chip_target_tau']
+    chip_weight = config['env']['chip_weight']
+    games_per_batch = config['dataset'].get('games_per_batch', 4)
     file_batch_size = config['dataset']['file_batch_size']
     reserve_ratio = config['dataset']['reserve_ratio']
     num_workers = config['dataset']['num_workers']
@@ -61,6 +68,7 @@ def train():
 
     mortal = Brain(version=version, **config['resnet']).to(device)
     dqn = DQN(version=version).to(device)
+    chip_target = ChipDQNTarget(dqn).to(device).eval()
     aux_net = AuxNet((4,)).to(device)
     all_models = (mortal, dqn, aux_net)
     if enable_compile:
@@ -71,7 +79,16 @@ def train():
     logging.info(f'obs shape: {obs_shape(version)}')
     logging.info(f'mortal params: {parameter_count(mortal):,}')
     logging.info(f'dqn params: {parameter_count(dqn):,}')
+    logging.info(f'chip_target params: {parameter_count(chip_target):,}')
     logging.info(f'aux params: {parameter_count(aux_net):,}')
+
+    def calc_beta_sel(step):
+        if step < beta_sel_warmup_steps:
+            return 0.0
+        if step < beta_sel_warmup_steps + beta_sel_ramp_steps:
+            t = (step - beta_sel_warmup_steps) / beta_sel_ramp_steps
+            return t * beta_sel_max
+        return beta_sel_max
 
     mortal.freeze_bn(config['freeze_bn']['mortal'])
 
@@ -108,7 +125,11 @@ def train():
         timestamp = datetime.fromtimestamp(state['timestamp']).strftime('%Y-%m-%d %H:%M:%S')
         logging.info(f'loaded: {timestamp}')
         mortal.load_state_dict(state['mortal'])
-        dqn.load_state_dict(state['current_dqn'])
+        dqn.load_state_dict(state['current_dqn'], strict=False)
+        if 'chip_target' in state:
+            chip_target.load_from_saved(state['chip_target'])
+        else:
+            chip_target.copy_from(dqn)
         aux_net.load_state_dict(state['aux_net'])
         if not online or state['config']['control']['online']:
             optimizer.load_state_dict(state['optimizer'])
@@ -116,6 +137,8 @@ def train():
         scaler.load_state_dict(state['scaler'])
         best_perf = state['best_perf']
         steps = state['steps']
+    else:
+        chip_target.copy_from(dqn)
 
     optimizer.zero_grad(set_to_none=True)
     mse = nn.MSELoss()
@@ -127,7 +150,7 @@ def train():
         logging.info(f'device: {device}')
 
     if online:
-        submit_param(mortal, dqn, is_idle=True)
+        submit_param(mortal, dqn, is_idle=True, beta_sel=calc_beta_sel(steps))
         logging.info('param has been submitted')
 
     writer = SummaryWriter(config['control']['tensorboard_dir'])
@@ -135,9 +158,11 @@ def train():
         'dqn_loss': 0,
         'cql_loss': 0,
         'next_rank_loss': 0,
+        'chip_loss': 0,
     }
     all_q = torch.zeros((save_every, batch_size), device=device, dtype=torch.float32)
     all_q_target = torch.zeros((save_every, batch_size), device=device, dtype=torch.float32)
+    all_q_chip = torch.zeros((save_every, batch_size), device=device, dtype=torch.float32)
     idx = 0
 
     def train_epoch():
@@ -196,23 +221,20 @@ def train():
         )
         data_loader = iter(DataLoader(
             dataset = file_data,
-            batch_size = batch_size,
+            batch_size = games_per_batch,
             drop_last = False,
             num_workers = num_workers,
             pin_memory = True,
             worker_init_fn = worker_init_fn,
+            collate_fn = make_collate_fn(batch_size, chip_n_step, gamma),
         ))
 
-        remaining_obs = []
-        remaining_actions = []
-        remaining_masks = []
-        remaining_steps_to_done = []
-        remaining_kyoku_rewards = []
-        remaining_player_ranks = []
-        remaining_bs = 0
         pb = tqdm(total=save_every, desc='TRAIN', initial=steps % save_every)
 
-        def train_batch(obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks):
+        def train_batch(
+            obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks,
+            nstep_r, boot_obs, boot_mask, boot_done,
+        ):
             nonlocal steps
             nonlocal idx
             nonlocal pb
@@ -223,19 +245,44 @@ def train():
             steps_to_done = steps_to_done.to(dtype=torch.int64, device=device)
             kyoku_rewards = kyoku_rewards.to(dtype=torch.float64, device=device)
             player_ranks = player_ranks.to(dtype=torch.int64, device=device)
+            nstep_r = nstep_r.to(dtype=torch.float32, device=device)
+            boot_obs = boot_obs.to(dtype=torch.float32, device=device)
+            boot_mask = boot_mask.to(dtype=torch.bool, device=device)
+            boot_done = boot_done.to(dtype=torch.bool, device=device)
             assert masks[range(batch_size), actions].all()
 
             q_target_mc = gamma ** steps_to_done * kyoku_rewards
             q_target_mc = q_target_mc.to(torch.float32)
 
+            beta_sel = calc_beta_sel(steps)
+
             with torch.autocast(device.type, enabled=enable_amp):
                 phi = mortal(obs)
-                q_out = dqn(phi, masks)
-                q = q_out[range(batch_size), actions]
+                q_main, q_chip = dqn(phi, masks, return_q_chip=True)
+                q = q_main[range(batch_size), actions]
                 dqn_loss = 0.5 * mse(q, q_target_mc)
                 cql_loss = 0
                 if not online:
-                    cql_loss = q_out.logsumexp(-1).mean() - q.mean()
+                    cql_loss = q_main.logsumexp(-1).mean() - q.mean()
+
+                chip_loss = torch.zeros((), device=device)
+                if chip_weight > 0:
+                    q_chip_a = q_chip[range(batch_size), actions]
+                    target = nstep_r.clone()
+                    needs_boot = ~boot_done
+                    if needs_boot.any():
+                        with torch.no_grad():
+                            phi_boot = mortal(boot_obs[needs_boot])
+                            boot_m = boot_mask[needs_boot]
+                            q_main_boot, q_chip_boot = dqn(
+                                phi_boot, boot_m, return_q_chip=True,
+                            )
+                            q_tot_boot = q_total(q_main_boot, q_chip_boot, beta_sel)
+                            best_a = q_tot_boot.masked_fill(~boot_m, -torch.inf).argmax(-1)
+                            q_chip_tgt_boot = chip_target(phi_boot, boot_m)
+                            boot_v = q_chip_tgt_boot[range(needs_boot.sum()), best_a]
+                            target[needs_boot] += (gamma ** chip_n_step) * boot_v
+                    chip_loss = 0.5 * mse(q_chip_a, target.detach())
 
                 next_rank_logits, = aux_net(phi)
                 next_rank_loss = ce(next_rank_logits, player_ranks)
@@ -244,6 +291,7 @@ def train():
                     dqn_loss,
                     cql_loss * min_q_weight,
                     next_rank_loss * next_rank_weight,
+                    chip_loss * chip_weight,
                 ))
             scaler.scale(loss / opt_step_every).backward()
 
@@ -252,8 +300,12 @@ def train():
                 if not online:
                     stats['cql_loss'] += cql_loss
                 stats['next_rank_loss'] += next_rank_loss
+                if chip_weight > 0:
+                    stats['chip_loss'] += chip_loss
                 all_q[idx] = q
                 all_q_target[idx] = q_target_mc
+                if chip_weight > 0:
+                    all_q_chip[idx] = q_chip[range(batch_size), actions]
 
             steps += 1
             idx += 1
@@ -265,11 +317,13 @@ def train():
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
+                if chip_weight > 0:
+                    chip_target.polyak_update(dqn, chip_target_tau)
             scheduler.step()
             pb.update(1)
 
             if online and steps % submit_every == 0:
-                submit_param(mortal, dqn, is_idle=False)
+                submit_param(mortal, dqn, is_idle=False, beta_sel=beta_sel)
                 logging.info('param has been submitted')
 
             if steps % save_every == 0:
@@ -283,6 +337,11 @@ def train():
                 if not online:
                     writer.add_scalar('loss/cql_loss', stats['cql_loss'] / save_every, steps)
                 writer.add_scalar('loss/next_rank_loss', stats['next_rank_loss'] / save_every, steps)
+                if chip_weight > 0:
+                    writer.add_scalar('loss/chip_loss', stats['chip_loss'] / save_every, steps)
+                    all_q_chip_1d = all_q_chip.cpu().numpy().flatten()[::128]
+                    writer.add_histogram('q_chip_predicted', all_q_chip_1d, steps)
+                writer.add_scalar('hparam/beta_sel', calc_beta_sel(steps), steps)
                 writer.add_scalar('hparam/lr', scheduler.get_last_lr()[0], steps)
                 writer.add_histogram('q_predicted', all_q_1d, steps)
                 writer.add_histogram('q_target', all_q_target_1d, steps)
@@ -298,6 +357,7 @@ def train():
                 state = {
                     'mortal': mortal.state_dict(),
                     'current_dqn': dqn.state_dict(),
+                    'chip_target': chip_target.state_dict_for_save(),
                     'aux_net': aux_net.state_dict(),
                     'optimizer': optimizer.state_dict(),
                     'scheduler': scheduler.state_dict(),
@@ -310,11 +370,14 @@ def train():
                 torch.save(state, state_file)
 
                 if online and steps % submit_every != 0:
-                    submit_param(mortal, dqn, is_idle=False)
+                    submit_param(mortal, dqn, is_idle=False, beta_sel=calc_beta_sel(steps))
                     logging.info('param has been submitted')
 
                 if steps % test_every == 0:
-                    stat = test_player.test_play(test_games // 4, mortal, dqn, device)
+                    stat = test_player.test_play(
+                        test_games // 4, mortal, dqn, device,
+                        beta_sel=calc_beta_sel(steps),
+                    )
                     mortal.train()
                     dqn.train()
 
@@ -367,6 +430,18 @@ def train():
                     }, steps)
                     writer.add_scalar('test_play/fuuro_num', stat.avg_fuuro_num, steps)
                     writer.add_scalar('test_play/fuuro_point', stat.avg_fuuro_point, steps)
+                    chip_realize = test_player.chip_realize_stats()
+                    if chip_realize is not None:
+                        writer.add_scalar(
+                            'test_play/aka_held_call_win_rate',
+                            chip_realize['call_win_rate'],
+                            steps,
+                        )
+                        writer.add_scalar(
+                            'test_play/aka_held_chip_realize_rate',
+                            chip_realize['chip_realize_rate'],
+                            steps,
+                        )
                     writer.flush()
 
                     if better:
@@ -386,44 +461,14 @@ def train():
                         sys.exit(0)
                 pb = tqdm(total=save_every, desc='TRAIN')
 
-        for obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks in data_loader:
-            bs = obs.shape[0]
-            if bs != batch_size:
-                remaining_obs.append(obs)
-                remaining_actions.append(actions)
-                remaining_masks.append(masks)
-                remaining_steps_to_done.append(steps_to_done)
-                remaining_kyoku_rewards.append(kyoku_rewards)
-                remaining_player_ranks.append(player_ranks)
-                remaining_bs += bs
+        for batch in data_loader:
+            if batch[0].shape[0] != batch_size:
                 continue
-            train_batch(obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks)
-
-        remaining_batches = remaining_bs // batch_size
-        if remaining_batches > 0:
-            obs = torch.cat(remaining_obs, dim=0)
-            actions = torch.cat(remaining_actions, dim=0)
-            masks = torch.cat(remaining_masks, dim=0)
-            steps_to_done = torch.cat(remaining_steps_to_done, dim=0)
-            kyoku_rewards = torch.cat(remaining_kyoku_rewards, dim=0)
-            player_ranks = torch.cat(remaining_player_ranks, dim=0)
-            start = 0
-            end = batch_size
-            while end <= remaining_bs:
-                train_batch(
-                    obs[start:end],
-                    actions[start:end],
-                    masks[start:end],
-                    steps_to_done[start:end],
-                    kyoku_rewards[start:end],
-                    player_ranks[start:end],
-                )
-                start = end
-                end += batch_size
+            train_batch(*batch)
         pb.close()
 
         if online:
-            submit_param(mortal, dqn, is_idle=True)
+            submit_param(mortal, dqn, is_idle=True, beta_sel=calc_beta_sel(steps))
             logging.info('param has been submitted')
 
     while True:

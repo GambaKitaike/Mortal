@@ -84,6 +84,112 @@ def build_td_transitions(obs, masks, at_kyoku, dones):
     return next_obs, next_masks, done_chip
 
 
+def unpack_entry(entry, oracle=False):
+    if oracle:
+        obs, invisible_obs, action, mask, steps_to_done, kyoku_reward, player_rank, next_obs, next_mask, done_chip, r_chip = entry
+    else:
+        obs, invisible_obs, action, mask, steps_to_done, kyoku_reward, player_rank, next_obs, next_mask, done_chip, r_chip = (
+            *entry[:1], None, *entry[1:]
+        )
+    return {
+        'obs': obs,
+        'invisible_obs': invisible_obs,
+        'action': action,
+        'mask': mask,
+        'steps_to_done': steps_to_done,
+        'kyoku_reward': kyoku_reward,
+        'player_rank': player_rank,
+        'next_obs': next_obs,
+        'next_mask': next_mask,
+        'done_chip': done_chip,
+        'r_chip': r_chip,
+    }
+
+
+def compute_nstep_chip(game, start_idx, n_step, gamma):
+    """n-step return for chip TD; truncates at done_chip or game end."""
+    game_size = len(game)
+    R = 0.0
+    steps_used = 0
+    for k in range(n_step):
+        j = start_idx + k
+        if j >= game_size:
+            break
+        r_chip = game[j][-1]
+        done = game[j][-2]
+        R += (gamma ** k) * float(r_chip)
+        steps_used = k + 1
+        if done:
+            return R, None, None, True
+
+    boot_idx = start_idx + steps_used
+    if steps_used < n_step or boot_idx >= game_size:
+        return R, None, None, True
+
+    boot = unpack_entry(game[boot_idx])
+    return R, boot['obs'], boot['mask'], False
+
+
+def collate_moves(batch, batch_size, n_step, gamma, oracle=False):
+    """Sample moves from a batch of games and compute n-step chip targets."""
+    samples = []
+    games = [g for g in batch if len(g) > 0]
+    if not games:
+        raise ValueError('collate_moves received no game data')
+
+    while len(samples) < batch_size:
+        game = random.choice(games)
+        i = random.randrange(len(game))
+        fields = unpack_entry(game[i], oracle=oracle)
+        nstep_r, boot_obs, boot_mask, boot_done = compute_nstep_chip(
+            game, i, n_step, gamma,
+        )
+        samples.append({
+            **fields,
+            'nstep_r': nstep_r,
+            'boot_obs': boot_obs if boot_obs is not None else fields['next_obs'],
+            'boot_mask': boot_mask if boot_mask is not None else fields['next_mask'],
+            'boot_done': boot_done,
+        })
+
+    def stack(key, dtype=None):
+        arr = [s[key] for s in samples]
+        if dtype is None:
+            return torch.as_tensor(np.stack(arr))
+        return torch.as_tensor(np.stack(arr), dtype=dtype)
+
+    out = (
+        stack('obs', torch.float32),
+        stack('action', torch.int64),
+        stack('mask', torch.bool),
+        stack('steps_to_done', torch.int64),
+        stack('kyoku_reward', torch.float64),
+        stack('player_rank', torch.int64),
+        stack('nstep_r', torch.float32),
+        stack('boot_obs', torch.float32),
+        stack('boot_mask', torch.bool),
+        torch.as_tensor([s['boot_done'] for s in samples], dtype=torch.bool),
+    )
+    if oracle:
+        out = (
+            out[0],
+            stack('invisible_obs', torch.float32),
+            *out[1:],
+        )
+    return out
+
+
+def make_collate_fn(batch_size, n_step, gamma, oracle=False):
+    from functools import partial
+    return partial(
+        collate_moves,
+        batch_size=batch_size,
+        n_step=n_step,
+        gamma=gamma,
+        oracle=oracle,
+    )
+
+
 class FileDatasetsIter(IterableDataset):
     def __init__(
         self,
@@ -250,6 +356,7 @@ class FileDatasetsIter(IterableDataset):
                     obs, masks, at_kyoku, dones,
                 )
 
+                game_entries = []
                 for i in range(game_size):
                     entry = [
                         obs[i],
@@ -267,7 +374,8 @@ class FileDatasetsIter(IterableDataset):
                         done_chip[i],
                         r_chip[i],
                     ])
-                    self.buffer.append(entry)
+                    game_entries.append(entry)
+                self.buffer.append(game_entries)
 
     def __iter__(self):
         if self.iterator is None:

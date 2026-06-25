@@ -194,6 +194,15 @@ class AuxNet(nn.Module):
     def forward(self, x):
         return self.net(x).split(self.dims, dim=-1)
 
+def dueling_q(v, a, mask):
+    a_sum = a.masked_fill(~mask, 0.).sum(-1, keepdim=True)
+    mask_sum = mask.sum(-1, keepdim=True)
+    a_mean = a_sum / mask_sum
+    return (v + a - a_mean).masked_fill(~mask, -torch.inf)
+
+def q_total(q_main, q_chip, beta_sel):
+    return q_main + beta_sel * q_chip
+
 class DQN(nn.Module):
     def __init__(self, *, version=1):
         super().__init__()
@@ -202,6 +211,8 @@ class DQN(nn.Module):
             case 1:
                 self.v_head = nn.Linear(512, 1)
                 self.a_head = nn.Linear(512, ACTION_SPACE)
+                self.v_chip_head = nn.Linear(512, 1)
+                self.a_chip_head = nn.Linear(512, ACTION_SPACE)
             case 2 | 3:
                 hidden_size = 512 if version == 2 else 256
                 self.v_head = nn.Sequential(
@@ -214,21 +225,126 @@ class DQN(nn.Module):
                     nn.Mish(inplace=True),
                     nn.Linear(hidden_size, ACTION_SPACE),
                 )
+                self.v_chip_head = nn.Sequential(
+                    nn.Linear(1024, hidden_size),
+                    nn.Mish(inplace=True),
+                    nn.Linear(hidden_size, 1),
+                )
+                self.a_chip_head = nn.Sequential(
+                    nn.Linear(1024, hidden_size),
+                    nn.Mish(inplace=True),
+                    nn.Linear(hidden_size, ACTION_SPACE),
+                )
             case 4:
                 self.net = nn.Linear(1024, 1 + ACTION_SPACE)
                 nn.init.constant_(self.net.bias, 0)
+                self.chip_net = nn.Linear(1024, 1 + ACTION_SPACE)
+                nn.init.constant_(self.chip_net.bias, 0)
+
+    def _main_heads(self, phi):
+        if self.version == 4:
+            return self.net(phi).split((1, ACTION_SPACE), dim=-1)
+        return self.v_head(phi), self.a_head(phi)
+
+    def _chip_heads(self, phi):
+        if self.version == 4:
+            return self.chip_net(phi).split((1, ACTION_SPACE), dim=-1)
+        return self.v_chip_head(phi), self.a_chip_head(phi)
+
+    def forward(self, phi, mask, *, return_q_chip=False):
+        v, a = self._main_heads(phi)
+        q = dueling_q(v, a, mask)
+        if not return_q_chip:
+            return q
+        v_c, a_c = self._chip_heads(phi)
+        q_chip = dueling_q(v_c, a_c, mask)
+        return q, q_chip
+
+    def forward_chip(self, phi, mask):
+        v_c, a_c = self._chip_heads(phi)
+        return dueling_q(v_c, a_c, mask)
+
+    def chip_state_dict(self):
+        if self.version == 4:
+            return {'chip_net': self.chip_net.state_dict()}
+        return {
+            'v_chip_head': self.v_chip_head.state_dict(),
+            'a_chip_head': self.a_chip_head.state_dict(),
+        }
+
+    def load_chip_state_dict(self, state_dict, *, strict=True):
+        if self.version == 4:
+            self.chip_net.load_state_dict(state_dict['chip_net'], strict=strict)
+        else:
+            self.v_chip_head.load_state_dict(state_dict['v_chip_head'], strict=strict)
+            self.a_chip_head.load_state_dict(state_dict['a_chip_head'], strict=strict)
+
+class ChipDQNTarget(nn.Module):
+    """Target network for Q_chip heads only; phi comes from the online Brain."""
+
+    def __init__(self, dqn: DQN):
+        super().__init__()
+        self.version = dqn.version
+        match dqn.version:
+            case 1:
+                self.v_chip_head = nn.Linear(512, 1)
+                self.a_chip_head = nn.Linear(512, ACTION_SPACE)
+            case 2 | 3:
+                hidden_size = 512 if dqn.version == 2 else 256
+                self.v_chip_head = nn.Sequential(
+                    nn.Linear(1024, hidden_size),
+                    nn.Mish(inplace=True),
+                    nn.Linear(hidden_size, 1),
+                )
+                self.a_chip_head = nn.Sequential(
+                    nn.Linear(1024, hidden_size),
+                    nn.Mish(inplace=True),
+                    nn.Linear(hidden_size, ACTION_SPACE),
+                )
+            case 4:
+                self.chip_net = nn.Linear(1024, 1 + ACTION_SPACE)
+                nn.init.constant_(self.chip_net.bias, 0)
 
     def forward(self, phi, mask):
         if self.version == 4:
-            v, a = self.net(phi).split((1, ACTION_SPACE), dim=-1)
+            v, a = self.chip_net(phi).split((1, ACTION_SPACE), dim=-1)
         else:
-            v = self.v_head(phi)
-            a = self.a_head(phi)
-        a_sum = a.masked_fill(~mask, 0.).sum(-1, keepdim=True)
-        mask_sum = mask.sum(-1, keepdim=True)
-        a_mean = a_sum / mask_sum
-        q = (v + a - a_mean).masked_fill(~mask, -torch.inf)
-        return q
+            v = self.v_chip_head(phi)
+            a = self.a_chip_head(phi)
+        return dueling_q(v, a, mask)
+
+    def copy_from(self, dqn: DQN):
+        if dqn.version == 4:
+            self.chip_net.load_state_dict(dqn.chip_net.state_dict())
+        else:
+            self.v_chip_head.load_state_dict(dqn.v_chip_head.state_dict())
+            self.a_chip_head.load_state_dict(dqn.a_chip_head.state_dict())
+
+    def polyak_update(self, dqn: DQN, tau: float):
+        with torch.no_grad():
+            if dqn.version == 4:
+                for tgt, src in zip(self.chip_net.parameters(), dqn.chip_net.parameters()):
+                    tgt.lerp_(src, tau)
+            else:
+                for tgt, src in zip(self.v_chip_head.parameters(), dqn.v_chip_head.parameters()):
+                    tgt.lerp_(src, tau)
+                for tgt, src in zip(self.a_chip_head.parameters(), dqn.a_chip_head.parameters()):
+                    tgt.lerp_(src, tau)
+
+    def state_dict_for_save(self):
+        if self.version == 4:
+            return {'chip_net': self.chip_net.state_dict()}
+        return {
+            'v_chip_head': self.v_chip_head.state_dict(),
+            'a_chip_head': self.a_chip_head.state_dict(),
+        }
+
+    def load_from_saved(self, state_dict):
+        if self.version == 4:
+            self.chip_net.load_state_dict(state_dict['chip_net'])
+        else:
+            self.v_chip_head.load_state_dict(state_dict['v_chip_head'])
+            self.a_chip_head.load_state_dict(state_dict['a_chip_head'])
 
 class GRP(nn.Module):
     def __init__(self, hidden_size=64, num_layers=2):

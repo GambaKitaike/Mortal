@@ -41,7 +41,7 @@ def main():
     mortal = Brain(version=version, num_blocks=num_blocks, conv_channels=conv_channels).eval()
     dqn = DQN(version=version).eval()
     mortal.load_state_dict(state['mortal'])
-    dqn.load_state_dict(state['current_dqn'])
+    dqn.load_state_dict(state['current_dqn'], strict=False)
 
     engine = MortalEngine(
         mortal,

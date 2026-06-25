@@ -39,7 +39,7 @@ def drain():
             continue
         return msg['drain_dir']
 
-def submit_param(mortal, dqn, is_idle=False):
+def submit_param(mortal, dqn, is_idle=False, beta_sel=0.0):
     remote = (config['online']['remote']['host'], config['online']['remote']['port'])
     with socket.socket() as conn:
         conn.connect(remote)
@@ -48,6 +48,7 @@ def submit_param(mortal, dqn, is_idle=False):
             'mortal': mortal.state_dict(),
             'dqn': dqn.state_dict(),
             'is_idle': is_idle,
+            'beta_sel': beta_sel,
         })
 
 def send_msg(conn: socket.socket, msg, packed=False):

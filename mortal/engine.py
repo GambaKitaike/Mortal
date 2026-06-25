@@ -3,6 +3,7 @@ import traceback
 import torch
 import numpy as np
 from torch.distributions import Normal, Categorical
+from model import q_total
 from typing import *
 
 class MortalEngine:
@@ -21,6 +22,7 @@ class MortalEngine:
         boltzmann_epsilon = 0,
         boltzmann_temp = 1,
         top_p = 1,
+        beta_sel = 0,
     ):
         self.engine_type = 'mortal'
         self.device = device or torch.device('cpu')
@@ -39,6 +41,7 @@ class MortalEngine:
         self.boltzmann_epsilon = boltzmann_epsilon
         self.boltzmann_temp = boltzmann_temp
         self.top_p = top_p
+        self.beta_sel = beta_sel
 
     def react_batch(self, obs, masks, invisible_obs):
         try:
@@ -68,6 +71,9 @@ class MortalEngine:
             case 2 | 3 | 4:
                 phi = self.brain(obs)
                 q_out = self.dqn(phi, masks)
+                if self.beta_sel > 0:
+                    q_chip = self.dqn.forward_chip(phi, masks)
+                    q_out = q_total(q_out, q_chip, self.beta_sel)
 
         if self.boltzmann_epsilon > 0:
             is_greedy = torch.full((batch_size,), 1-self.boltzmann_epsilon, device=self.device).bernoulli().to(torch.bool)

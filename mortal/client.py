@@ -47,10 +47,11 @@ def main():
                     break
                 time.sleep(3)
         mortal.load_state_dict(rsp['mortal'])
-        dqn.load_state_dict(rsp['dqn'])
+        dqn.load_state_dict(rsp['dqn'], strict=False)
+        beta_sel = rsp.get('beta_sel', 0.0)
         logging.info('param has been updated')
 
-        rankings, file_list = train_player.train_play(mortal, dqn, device)
+        rankings, file_list = train_player.train_play(mortal, dqn, device, beta_sel=beta_sel)
         avg_rank = rankings @ np.arange(1, 5) / rankings.sum()
         avg_pt = rankings @ pts / rankings.sum()
 

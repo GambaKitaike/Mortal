@@ -29,6 +29,7 @@ class State:
     # fields below are protected by param_lock
     mortal_param: Optional[OrderedDict]
     dqn_param: Optional[OrderedDict]
+    beta_sel: float
     param_version: int
     idle_param_version: int
 S = None
@@ -70,6 +71,7 @@ class Handler(BaseRequestHandler):
                     'status': 'ok',
                     'mortal': S.mortal_param,
                     'dqn': S.dqn_param,
+                    'beta_sel': S.beta_sel,
                     'param_version': S.param_version,
                 }
             torch.save(res, buf)
@@ -89,6 +91,7 @@ class Handler(BaseRequestHandler):
         with S.param_lock:
             S.mortal_param = msg['mortal']
             S.dqn_param = msg['dqn']
+            S.beta_sel = msg.get('beta_sel', 0.0)
             S.param_version += 1
             if msg['is_idle']:
                 S.idle_param_version = S.param_version
@@ -144,6 +147,7 @@ def main():
         submission_id = 0,
         mortal_param = None,
         dqn_param = None,
+        beta_sel = 0.0,
         param_version = 0,
         idle_param_version = 0,
     )
