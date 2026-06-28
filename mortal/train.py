@@ -37,6 +37,7 @@ def train():
     submit_every = config['control']['submit_every']
     test_games = config['test_play']['games']
     min_q_weight = config['cql']['min_q_weight']
+    enable_cql_online = config['cql'].get('enable_online', False)
     next_rank_weight = config['aux']['next_rank_weight']
     assert save_every % opt_step_every == 0
     assert test_every % save_every == 0
@@ -170,10 +171,15 @@ def train():
         nonlocal idx
 
         player_names = []
+        drain_dir = None
         if online:
             player_names = ['trainee']
-            dirname = drain()
-            file_list = list(map(lambda p: path.join(dirname, p), os.listdir(dirname)))
+            drain_dir = drain()
+            file_list = [
+                path.join(drain_dir, p)
+                for p in os.listdir(drain_dir)
+                if path.isfile(path.join(drain_dir, p))
+            ]
         else:
             player_names_set = set()
             for filename in config['dataset']['player_names_files']:
@@ -202,6 +208,9 @@ def train():
                 file_list.sort(reverse=True)
                 torch.save({'file_list': file_list}, file_index)
         logging.info(f'file list size: {len(file_list):,}')
+        if online and not file_list:
+            logging.warning('drain returned empty file list, skipping epoch')
+            return drain_dir
 
         before_next_test_play = (test_every - steps % test_every) % test_every
         logging.info(f'total steps: {steps:,} (~{before_next_test_play:,})')
@@ -262,7 +271,7 @@ def train():
                 q = q_main[range(batch_size), actions]
                 dqn_loss = 0.5 * mse(q, q_target_mc)
                 cql_loss = 0
-                if not online:
+                if not online or enable_cql_online:
                     cql_loss = q_main.logsumexp(-1).mean() - q.mean()
 
                 chip_loss = torch.zeros((), device=device)
@@ -297,7 +306,7 @@ def train():
 
             with torch.inference_mode():
                 stats['dqn_loss'] += dqn_loss
-                if not online:
+                if not online or enable_cql_online:
                     stats['cql_loss'] += cql_loss
                 stats['next_rank_loss'] += next_rank_loss
                 if chip_weight > 0:
@@ -390,6 +399,15 @@ def train():
 
                     logging.info(f'avg rank: {stat.avg_rank:.6}')
                     logging.info(f'avg pt: {avg_pt:.6}')
+                    logging.info(
+                        f'test_play behavior: agari={stat.agari_rate * 100:.2f}% '
+                        f'houjuu={stat.houjuu_rate * 100:.2f}% '
+                        f'fuuro={stat.fuuro_rate * 100:.2f}% '
+                        f'riichi={stat.riichi_rate * 100:.2f}% '
+                        f'ryukyoku={stat.ryukyoku_rate * 100:.2f}% '
+                        f'agari_pt={stat.avg_point_per_agari:.1f} '
+                        f'houjuu_pt={stat.avg_point_per_houjuu:.1f}'
+                    )
                     writer.add_scalar('test_play/avg_ranking', stat.avg_rank, steps)
                     writer.add_scalar('test_play/avg_pt', avg_pt, steps)
                     writer.add_scalars('test_play/ranking', {
@@ -398,12 +416,14 @@ def train():
                         '3rd': stat.rank_3_rate,
                         '4th': stat.rank_4_rate,
                     }, steps)
-                    writer.add_scalars('test_play/behavior', {
-                        'agari': stat.agari_rate,
-                        'houjuu': stat.houjuu_rate,
-                        'fuuro': stat.fuuro_rate,
-                        'riichi': stat.riichi_rate,
-                    }, steps)
+                    # add_scalar (not add_scalars): online test_play sys.exit(0) drops grouped scalars
+                    writer.add_scalar('test_play/behavior/agari', stat.agari_rate, steps)
+                    writer.add_scalar('test_play/behavior/houjuu', stat.houjuu_rate, steps)
+                    writer.add_scalar('test_play/behavior/fuuro', stat.fuuro_rate, steps)
+                    writer.add_scalar('test_play/behavior/riichi', stat.riichi_rate, steps)
+                    writer.add_scalar('test_play/behavior/ryukyoku', stat.ryukyoku_rate, steps)
+                    writer.add_scalar('test_play/point/agari_avg', stat.avg_point_per_agari, steps)
+                    writer.add_scalar('test_play/point/houjuu_avg', stat.avg_point_per_houjuu, steps)
                     writer.add_scalars('test_play/agari_point', {
                         'overall': stat.avg_point_per_agari,
                         'riichi': stat.avg_point_per_riichi_agari,
@@ -471,8 +491,12 @@ def train():
             submit_param(mortal, dqn, is_idle=True, beta_sel=calc_beta_sel(steps))
             logging.info('param has been submitted')
 
+        return drain_dir
+
     while True:
-        train_epoch()
+        epoch_drain_dir = train_epoch()
+        if online and epoch_drain_dir and path.isdir(epoch_drain_dir):
+            shutil.rmtree(epoch_drain_dir, ignore_errors=True)
         gc.collect()
         # torch.cuda.empty_cache()
         # torch.cuda.synchronize()

@@ -26,6 +26,7 @@ class State:
     # fields below are protected by dir_lock
     buffer_size: int
     submission_id: int
+    drain_generation: int
     # fields below are protected by param_lock
     mortal_param: Optional[OrderedDict]
     dqn_param: Optional[OrderedDict]
@@ -98,26 +99,26 @@ class Handler(BaseRequestHandler):
 
     def handle_drain(self):
         drained_size = 0
+        drain_subdir = None
         with S.dir_lock:
             buffer_list = os.listdir(S.buffer_dir)
             raw_count = len(buffer_list)
             assert raw_count == S.buffer_size
             if (not S.force_sequential or raw_count >= S.capacity) and raw_count > 0:
-                old_drain_list = os.listdir(S.drain_dir)
-                for filename in old_drain_list:
-                    filepath = path.join(S.drain_dir, filename)
-                    os.remove(filepath)
+                S.drain_generation += 1
+                drain_subdir = path.join(S.drain_dir, str(S.drain_generation))
+                os.makedirs(drain_subdir, exist_ok=True)
                 for filename in buffer_list:
                     src = path.join(S.buffer_dir, filename)
-                    dst = path.join(S.drain_dir, filename)
+                    dst = path.join(drain_subdir, filename)
                     shutil.move(src, dst)
                 drained_size = raw_count
                 S.buffer_size = 0
-                logging.info(f'files transferred to trainer: {drained_size}')
+                logging.info(f'files transferred to trainer: {drained_size} -> {drain_subdir}')
                 logging.info(f'total buffer size: {S.buffer_size}')
         self.send_msg({
             'count': drained_size,
-            'drain_dir': S.drain_dir,
+            'drain_dir': drain_subdir or S.drain_dir,
         })
 
     def send_msg(self, msg, packed=False):
@@ -145,6 +146,7 @@ def main():
         param_lock = Lock(),
         buffer_size = 0,
         submission_id = 0,
+        drain_generation = 0,
         mortal_param = None,
         dqn_param = None,
         beta_sel = 0.0,

@@ -41,6 +41,7 @@ class TestPlayer:
         )
         self.chal_version = config['control']['version']
         self.log_dir = path.abspath(config['test_play']['log_dir'])
+        self.self_play = config['test_play'].get('self_play', False)
         self._last_chip_realize = None
 
     def chip_realize_stats(self):
@@ -85,9 +86,10 @@ class TestPlayer:
             disable_progress_bar = False,
             log_dir = self.log_dir,
         )
+        champion = engine_chal if self.self_play else self.baseline_engine
         env.py_vs_py(
             challenger = engine_chal,
-            champion = self.baseline_engine,
+            champion = champion,
             seed_start = (10000, 0x2000),
             seed_count = seed_count,
         )
