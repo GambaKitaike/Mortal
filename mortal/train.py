@@ -15,6 +15,7 @@ def train():
     from datetime import datetime
     from itertools import chain
     from torch import optim, nn
+    from torch.nn import functional as F
     from torch.amp import GradScaler
     from torch.nn.utils import clip_grad_norm_
     from torch.utils.data import DataLoader
@@ -36,6 +37,8 @@ def train():
     test_every = config['control']['test_every']
     submit_every = config['control']['submit_every']
     test_games = config['test_play']['games']
+    dqn_loss_type = config['control']['dqn_loss']
+    huber_delta = config['control']['huber_delta']
     min_q_weight = config['cql']['min_q_weight']
     enable_cql_online = config['cql'].get('enable_online', False)
     next_rank_weight = config['aux']['next_rank_weight']
@@ -269,7 +272,10 @@ def train():
                 phi = mortal(obs)
                 q_main, q_chip = dqn(phi, masks, return_q_chip=True)
                 q = q_main[range(batch_size), actions]
-                dqn_loss = 0.5 * mse(q, q_target_mc)
+                if dqn_loss_type == 'huber':
+                    dqn_loss = F.huber_loss(q, q_target_mc, delta=huber_delta)
+                else:
+                    dqn_loss = 0.5 * mse(q, q_target_mc)
                 cql_loss = 0
                 if not online or enable_cql_online:
                     cql_loss = q_main.logsumexp(-1).mean() - q.mean()

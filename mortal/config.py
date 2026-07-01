@@ -17,3 +17,8 @@ _env_defaults = {
 }
 config.setdefault('env', {}).update({k: v for k, v in _env_defaults.items() if k not in config['env']})
 config.setdefault('dataset', {}).setdefault('games_per_batch', 4)
+_control_defaults = {
+    'dqn_loss': 'mse',
+    'huber_delta': 15.0,
+}
+config.setdefault('control', {}).update({k: v for k, v in _control_defaults.items() if k not in config['control']})

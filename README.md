@@ -1,195 +1,166 @@
-本リポジトリは [Mortal](https://github.com/Equim-chan/Mortal) の fork です。本家のREADMEは [MORTAL_UPSTREAM_README.md](MORTAL_UPSTREAM_README.md) を参照。
+# フリー雀荘特化 麻雀AI — 報酬設計の調査基盤
 
-# Free Parlor Reward — Mortal 報酬設計実験
+[Mortal](https://github.com/Equim-chan/Mortal)（天鳳＝着順特化の強化学習麻雀AI）を
+ベースに、**チップ（祝儀）ありのフリー雀荘ルールで勝てる打牌**を学習させるには
+報酬をどう設計すべきかを実験的に解明するプロジェクト。
 
-**強化学習は本プロジェクトが初挑戦。** 環境構築（WSL2 / Blackwell GPU）、Rust + pyo3 による libriichi 改修、CQL オフライン RL、対照実験の設計までを独力で実施した個人開発・ポートフォリオ向けプロジェクト。
-
-オープンソース麻雀AI [Mortal](https://github.com/Equim-chan/Mortal) を土台に、Mortal（天鳳・着順特化）の報酬をフリー雀荘/競技ルール（素点 + ウマオカ + チップ）向けに設計し直し、重みパラメータを変えながらオフライン RL（CQL）で学習・評価した。
-
-**結論:** 報酬関数の設計だけで麻雀AIの打牌戦略は定量的に制御でき、「金銭的に忠実な」報酬が必ずしも「良い打牌」を生まないことを、同一アーキテクチャの対照実験で示した。
+> **位置づけ — これは検証用モデルであり、商用プロダクトではない。**
+> 最終目標は商用フリー雀荘特化麻雀AIだが、それは本リポジトリの延長では作らない。
+> 本プロジェクトの目的は「**どんな報酬設計が、チップあり麻雀でどんな打牌効果を生むか**」を、
+> 実績ある既存アーキテクチャ（Mortal）の上で**安く・速く調査する**こと。
+> ここで得た**知見**（報酬設計・学習の限界・online TDの挙動）を持って、商用版は
+> 別途ゼロから実装する想定（後述のライセンス事情・データ事情による）。
 
 ---
 
-## 動機・背景
+## 何を調べているか
 
-Mortal 本来の報酬は**純着順**（天鳳段位制に最適化）。一方、フリー雀荘や競技麻雀では **素点（レート）+ ウマオカ + チップ（祝儀）** で精算する。ルールが違えば最適打牌も違うため、報酬を作り替える必要があった。
+天鳳ルール（着順がすべて・チップ無し）に最適化された Mortal は、フリー雀荘で
+価値を持つ**赤ドラ・一発・裏・役満（＝チップ）を取りに行く打牌**を学ばない。
+特に「赤を持ったら鳴いてでも和了る」という、チップルールでの基本戦術が出ない。
 
-本プロジェクトで設計した報酬式:
+報酬式を以下のように拡張し、各項が打牌をどう変えるかを段階的に検証する：
 
 ```
-reward = α · (素点 / 1000) + β · (チップ枚数 × 5.0) + γ · 順位点
+reward = α·(素点/1000) + β·(チップ枚数 × 5.0) + γ·順位点(ウマオカ)
+       + opp(赤取りこぼし罰)  + [online] β_sel · Q_chip(per-move TD価値)
 ```
 
-| 項 | 内容 |
+対象ルール: 4人打ち・喰いタン・赤×3・25000持ち30000返し・ウマ10-20・オカあり。
+
+---
+
+## 主要な発見（要約）
+
+| 論点 | 結論 |
 |---|---|
-| 素点 | 局ごとの点数増減（千点正規化） |
-| チップ | 赤ドラ1枚/枚、一発1枚、裏ドラ1枚/枚、役満5枚。ツモは合計×3、ロンは合計×1 |
-| 順位点 | ウマオカ `[+35, +5, −15, −25]`（千点・ゼロ和） |
+| 報酬設計で打牌は動くか | **動く**。素点/チップ/順位点の重みで副露率・和了打点が定量的に変化（Phase2-4） |
+| offline で赤の鳴きを学べるか | **学べない（天井あり）**。CQLが「赤で鳴く」を教師データ外として抑制。鳴き和了率が人間8.98%に対しAI3%台で頭打ち（Phase3-4d） |
+| online 自己対戦で天井を超えられるか | **一時的に超える、が安定しない**。per-move TD（Q_chip）で鳴き和了率6.7%・赤選択性+2.9pp（人間並み）を記録するが、継続学習で振動し平均3%台に収束（Phase5） |
+| 安定化のカギ | CQL強度の単一スイープでは解けない。n_step（局末報酬の逆流距離）・自己対戦の非定常性が振動の主因と推定（Phase6で検証予定） |
 
-`α = β = γ = 1` としたとき、実際の金銭精算額と一致する設計（[phase4_chip.md](freeparlor/docs/phase4_chip.md) に検算あり）。
-
----
-
-## 技術スタック / 構成
-
-| レイヤ | 内容 |
-|---|---|
-| エミュレータ | **libriichi**（Rust）— 対局進行・点数計算 |
-| 学習 | **mortal**（Python + PyTorch）— ResNet + CQL オフラインRL |
-| 着順予測 | **GRP**（Group Rank Predictor）— 教師データから学習 |
-| 環境 | WSL2 / Ubuntu、RTX 5060（Blackwell sm_120, cu128 PyTorch）、conda、Rust + pyo3 |
-
-本家 Mortal からの fork 運用。改修は `freeparlor/`（設計書・config・分析スクリプト）と、報酬まわりの libriichi / mortal コード。
+**現在地**: 「online TDは offline天井に触れられるが、安定保持はまだできていない」。
+失敗ではなく**未到達**——打牌は健全（avg_rank≈2.5、放銃率正常）なまま、目的の
+behaviorが安定しない段階。
 
 ---
 
-## 実験フェーズ
+## Phase 一覧
 
-### Phase 1 — ベースライン確立
+| Phase | 内容 | 結論 |
+|---|---|---|
+| 0 | 環境構築（WSL2 / RTX5060 / Rust+PyO3） | — |
+| 1 | 素 Mortal 再現（192×40, 天鳳2009） | 打牌が人間水準 |
+| 2 | 素点+ウマオカ報酬 | 副露 −13.4pp、平均打点 +1322 |
+| 3 | α:γ スイープ | **offline天井を発見**（素点重視でも副露増えず） |
+| 4 | チップ β 導入（libriichi改修で祝儀を正確勘定） | 健全域 β≤0.3 |
+| 4c | 赤条件別 人間 vs AI | 人間は赤持ちで副露+2.81pp、AIは逆 |
+| 4d | 赤取りこぼし罰プローブ | offlineの限界を確定（鳴き和了率が天井） |
+| 5 | online自己対戦 + per-move Q_chip TD | 天井に触れるが安定せず（上記） |
+| 6 | （予定）n_step延長・相手プール混合で安定化 | — |
 
-素の Mortal（着順報酬）を天鳳2009データで再現。192×40 モデルで自己対戦400局の打牌統計を計測。
-
-| 指標 | 値 | 鳳凰卓目安 |
-|---|---:|---|
-| 和了率 | 22.27% | ~22% |
-| 放銃率 | 14.31% | ~12% |
-| 副露率 | 30.39% | ~35% |
-
-人間水準に近い打牌であることを確認し、以降の比較基準とした。詳細: [phase1_stats_192x40.md](freeparlor/docs/phase1_stats_192x40.md)
-
-### Phase 2 — 素点 + ウマオカ報酬への差し替え
-
-初のコード改修。報酬を純着順 → 素点 + ウマオカに変更。同一アーキテクチャ（192×40）で対照実験。
-
-| 指標 | Phase 1 | Phase 2 | Δ |
-|---|---:|---:|---:|
-| 副露率 | 30.39% | 16.97% | **−13.4pp** |
-| 平均和了打点 | 5505 | 6827 | **+1322** |
-| 立直率 | 15.67% | 26.23% | +10.6pp |
-
-**報酬を変えると打牌が変わる**ことを実証。詳細: [phase2_result.md](freeparlor/docs/phase2_result.md)
-
-### Phase 3 — α:γ 比スイープ
-
-素点重み α と順位点重み γ を4点でスイープ（192×40、各400局自己対戦）。
-
-| 指標 | rank_only | rank_heavy | balanced | score_heavy |
-|---|---:|---:|---:|---:|
-| 副露率 | 30.39% | 6.84% | 16.97% | 10.41% |
-| 平均和了打点 | 5505 | 7264 | 6827 | 7301 |
-| 流局率 | 11.26% | 25.13% | 15.45% | 22.61% |
-
-- **平均打点**は素点重視方向（rank_only → score_heavy）で単調増加（5505 → 7301, +33%）。
-- **副露率**は素点重視でも増えない（score_heavy 10.41% < rank_only 30.39%）。オフライン学習は教師データ（人間・着順志向）の分布に制約される**天井**があることを発見。
-
-詳細: [phase3_sweep.md](freeparlor/docs/phase3_sweep.md)
-
-### Phase 4 — チップ（祝儀）報酬の導入
-
-libriichi（Rust）を改修し、pyo3 経由で和了内訳（赤/裏/一発/役満）を Python に公開。チップを正確に勘定（学習データの赤出現率 **42.7%**）。
-
-**β = 1.0（金銭精算忠実）** で打牌が崩壊:
-
-| 指標 | β = 0 | β = 1.0 |
-|---|---:|---:|
-| 和了率 | 21.38% | 9.39% |
-| 副露率 | 16.97% | 0.51% |
-| 流局率 | 15.45% | 62.63% |
-
-**β スイープ**（0 / 0.1 / 0.3 / 0.5 / 1.0）で健全域は **β ≤ 0.3** と判明（流局15〜20%、和了20%前後、副露12〜17%）。
-
-**赤ドラ条件別分析**（[phase4_aka_conditional.md](freeparlor/docs/phase4_aka_conditional.md)）: 人間の正着「赤持ち → 鳴いて上がってチップ確保」は**いずれの β でも副露率では確認できない**。代わりに「赤持ち → 立直率↑」が一貫。原因は**赤を抱えて流局した取りこぼし損失が報酬に無い**ことと特定。
-
-詳細: [phase4_chip.md](freeparlor/docs/phase4_chip.md)
+詳細は `freeparlor/docs/` の各 Phase ドキュメント、最新の全体状況は
+`freeparlor/docs/next_steps.md` を参照。
 
 ---
 
-## 主要な発見
+## アーキテクチャ
 
-- **報酬設計がルールに対する打牌を定量的に決定づける** — Phase 2 の対照実験で実証（副露 −13pp、平均打点 +1322）。
-- **報酬の絶対スケールが学習の安定性 / 打牌の健全性を左右する** — β 過大（1.0）で流局62%・副露0.5%に崩壊。loss は未発散でも打牌は実用域外。
-- **オフライン学習には教師データ分布による天井がある** — 素点重視にしても副露率は人間データ水準を超えない（Phase 3）。
-- **チップ報酬に「取りこぼし損失」が欠けると、人間の正着を再現できない** — 赤条件別分析で特定（未実装）。
+- **ゲームエンジン**: libriichi（Rust）。フリー雀荘ルールのため改修
+  （`agari_detail` で赤/裏/一発/役満を公開、arena の hora に `chip_delta` を埋め込み）。
+- **学習**: PyTorch。192×40 ResNet エンコーダ + dueling DQN + GRP（順位予測）。
+- **offline**: 天鳳2009棋譜から CQL（Conservative Q-Learning）。MC ターゲット。
+- **online**: 自己対戦（server / trainer / client×3 の3プロセス）。
+  チップ価値を **Q_chip** として分離し per-move TD で学習
+  （`Q_total = Q_main + β_sel·Q_chip`）。Q_main の既存設計は不変更。
+
+online チップTDの実装詳細は `freeparlor/docs/online_r_chip_layer{1,2,3}.md`。
 
 ---
 
-## 本家 Mortal との差分
+## 再現方法
 
-| ファイル | 内容 |
-|---|---|
-| `libriichi/src/state/agari_detail.rs` | 和了内訳 pyclass（`AgariDetail`） |
-| `libriichi/src/state/agent_helper.rs` | `agari_detail()` 実装 |
-| `libriichi/src/state/getter.rs` | Python 公開 `PlayerState.agari_detail()` |
-| `mortal/reward_calculator.py` | `calc_delta_blend` — 素点 + チップ + 順位点 |
-| `mortal/dataloader.py` | 報酬配線、チップ npz 読込 |
-| `freeparlor/` | 設計書、各 phase 結果、config テンプレ、前処理/分析スクリプト |
-
-```
-$ git diff upstream/main --stat
-
- freeparlor/configs/.gitkeep                        |   0
- freeparlor/configs/phase1_pipeline.toml.template   | 157 +++++++++++++
- freeparlor/configs/phase1_production.toml.template |  69 ++++++
- freeparlor/configs/phase1_repro_192x40.toml        | 159 +++++++++++++
- freeparlor/configs/phase1_repro_64x10.toml         | 158 +++++++++++++
- freeparlor/configs/phase2_freeparlor.toml          | 160 +++++++++++++
- freeparlor/configs/phase3_sweep_balanced.toml      | 160 +++++++++++++
- freeparlor/configs/phase3_sweep_rank_heavy.toml    | 160 +++++++++++++
- freeparlor/configs/phase3_sweep_rank_only.toml     | 160 +++++++++++++
- freeparlor/configs/phase3_sweep_score_heavy.toml   | 160 +++++++++++++
- freeparlor/configs/phase4_chip_beta0_1_192x40.toml | 162 ++++++++++++++
- freeparlor/configs/phase4_chip_beta0_3_192x40.toml | 162 ++++++++++++++
- freeparlor/configs/phase4_chip_beta0_5_192x40.toml | 162 ++++++++++++++
- freeparlor/configs/phase4_chip_beta0_64x10.toml    | 162 ++++++++++++++
- freeparlor/configs/phase4_chip_beta1_192x40.toml   | 163 ++++++++++++++
- freeparlor/configs/phase4_chip_beta1_64x10.toml    | 163 ++++++++++++++
- freeparlor/configs/phase4_sweep_eval_beta0.toml    | 150 +++++++++++++
- freeparlor/configs/phase4_sweep_eval_beta1.toml    | 153 +++++++++++++
- freeparlor/docs/.gitkeep                           |   0
- freeparlor/docs/libriichi_agari_survey.md          | 249 +++++++++++++++++++++
- freeparlor/docs/phase1_result.md                   | 103 +++++++++
- freeparlor/docs/phase1_stats_192x40.md             | 122 ++++++++++
- freeparlor/docs/phase2_result.md                   | 143 ++++++++++++
- freeparlor/docs/phase3_sweep.md                    |  78 +++++++
- freeparlor/docs/phase4_aka_conditional.md          | 133 +++++++++++
- freeparlor/docs/phase4_chip.md                     | 238 ++++++++++++++++++++
- freeparlor/experiments/.gitkeep                    |   0
- freeparlor/scripts/analyze_aka_conditional.py      | 214 ++++++++++++++++++
- freeparlor/scripts/preprocess_chips.py             | 135 +++++++++++
- freeparlor/scripts/verify_agari_detail.py          | 141 ++++++++++++
- libriichi/src/state/agari_detail.rs                |  22 ++
- libriichi/src/state/agent_helper.rs                | 136 ++++++++++-
- libriichi/src/state/getter.rs                      |  12 +
- libriichi/src/state/mod.rs                         |   3 +
- mortal/dataloader.py                               |  34 ++-
- mortal/reward_calculator.py                        |  17 +-
- 36 files changed, 4392 insertions(+), 8 deletions(-)
+### 環境
+```bash
+# WSL2 / RTX5060 / CUDA / conda env "mortal"
+conda activate mortal
 ```
 
+### libriichi ビルド（Rust改修後）
+```bash
+cargo build -p libriichi --lib --release
+cp target/release/deps/libriichi.so mortal/libriichi.so
+```
+
+### offline 学習
+```bash
+# runs/ の spawn ランチャ経由（WSL2 の CUDA fork 回避のため必須）
+MORTAL_CFG=freeparlor/configs/<config>.toml python runs/run_train.py
+```
+
+### online 学習（3プロセス）
+```bash
+# server / trainer / client×3。起動前に stale プロセス停止と port5000 解放を確認
+MORTAL_CFG=runs/online_main/config.toml python runs/run_server.py
+MORTAL_CFG=runs/online_main/config.toml python runs/run_train.py
+MORTAL_CFG=runs/online_main/config.toml python runs/run_client.py  # ×3
+```
+
+### 評価
+打牌統計で比較する（自己対戦の avg_rank は常に≈2.5 のため）。
+赤条件別の分析は `freeparlor/scripts/analyze_aka_conditional.py`、
+チップ実現率は `analyze_chip_realize.py`。
+
 ---
 
-## 今後の課題
+## 主要パラメータ（現状）
 
-- チップ報酬に**取りこぼし損失**（赤保有で流局した場合の機会損失）を組み込み、「赤持ち → 確実に上がる」を再現する（**未実装**）。
-- **オンライン自己対戦 RL** で人間データの天井を超える（**未実装**・要 GPU）。
-- 学習データを2009年1年分から増やし、モデル強度を上げる。
-- 天鳳データの利用規約上、本 AI は**非商用・ポートフォリオ用途に限る**（下記参照）。
+| パラメータ | 値 | 備考 |
+|---|---|---|
+| α / γ | 1.0 / 1.0 | 素点・順位点の重み |
+| β | ≤0.3 | チップ報酬。1.0で打牌崩壊 |
+| lambda_opp | 0.3 | 赤取りこぼし罰（offline健全域） |
+| enable_cql_online | true | falseだと無差別鳴きが暴走 |
+| min_q_weight | 未確定 | 0.3が最良だが不安定。安定解は探索中 |
+| chip_n_step | 3 | 延長検討中（振動の主因候補） |
+| chip_target_tau | 0.005 | Q_chip target の Polyak |
+| chip_weight | 1.0 | chip_loss の損失重み |
+| beta_sel_max | 0.3 | warmup 2000 / ramp 2000 step |
 
 ---
 
-## 注意・ライセンス
+## 今後（ロードマップ）
 
-- 土台は [Mortal](https://github.com/Equim-chan/Mortal)（**AGPL-3.0**）。本リポジトリも AGPL に従う。
-- 学習データは**天鳳鳳凰卓**由来。天鳳の利用規約により、競合製品・商用利用は不可。本プロジェクトは研究・ポートフォリオ目的の**非商用**利用に限定する。
+### 本リポジトリ内（調査の継続）
+- **短期**: n_step延長・相手プール混合で online の振動を抑え、選択的な赤鳴みを
+  安定保持できるか検証（Phase6）。
+- 評価軸を打牌統計から**チップ込み収支**（期待チップを含む和了点）へ移行。
+
+### 商用版（別実装・本リポジトリの外）
+商用フリー雀荘AIは、本リポジトリの延長ではなく**ゼロから実装する**予定。理由は2つ：
+
+1. **ライセンス**: ベースの Mortal は AGPL-3.0-or-later（下記）。ネットワーク提供にも
+   ソース公開義務が及ぶため、これを土台にしたクローズドソースの商用製品は作れない。
+   本プロジェクトは「AGPLコードで**知見のみ**を得る検証」と位置づけ、商用版は
+   コードを継承せず知見だけを用いて独立実装する。
+2. **データ事情**: チップありルールの牌譜データは事実上存在しない（天鳳2009は
+   チップ無し）。よって商用版は既存棋譜の模倣ではなく、**純粋な強化学習
+   （自己対戦中心）**になる見込み。本プロジェクトの online TD・報酬設計の知見が、
+   その設計の出発点になる。
 
 ---
 
-## 関連ドキュメント
+## ライセンス
 
-| ファイル | 内容 |
-|---|---|
-| [phase1_stats_192x40.md](freeparlor/docs/phase1_stats_192x40.md) | Phase 1 打牌統計 |
-| [phase2_result.md](freeparlor/docs/phase2_result.md) | Phase 2 報酬差し替え結果 |
-| [phase3_sweep.md](freeparlor/docs/phase3_sweep.md) | Phase 3 α:γ スイープ |
-| [phase4_chip.md](freeparlor/docs/phase4_chip.md) | Phase 4 チップ報酬・β スイープ |
-| [phase4_aka_conditional.md](freeparlor/docs/phase4_aka_conditional.md) | Phase 4 赤ドラ条件別分析 |
+本プロジェクトは [Mortal](https://github.com/Equim-chan/Mortal)
+（Copyright © 2021-2022 Equim）の派生物であり、**GNU AGPL-3.0-or-later** を継承する。
+
+- **コード**: AGPL-3.0-or-later。本リポジトリを配布・改変・**ネットワーク経由で
+  サービス提供**する場合、AGPL の条件（ソースコード提供義務を含む）に従う必要がある。
+- 原 Mortal の README は `MORTAL_UPSTREAM_README.md` に保存。
+- ロゴ等アセットは原プロジェクトでは CC BY-SA 4.0。
+
+> ⚠️ **商用利用の注意**: AGPL-3.0 はネットワーク利用にもソース公開義務が及ぶ
+> （ネットワーク条項）。本コードベースを土台にしたクローズドソース商用製品は
+> 原則として作れない。商用版を独立実装する方針なのはこのため（上記ロードマップ参照）。
+> ライセンス解釈は最終的に専門家への確認を推奨。
