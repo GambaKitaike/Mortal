@@ -99,6 +99,54 @@ class TestPlayer:
         torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
         return stat
 
+    def test_play_ppo(
+        self,
+        seed_count,
+        mortal,
+        actor_critic,
+        device,
+        *,
+        seed_start=(10000, 0x2000),
+        clear_log_dir=True,
+    ):
+        from ppo_engine import PPOEngine
+
+        torch.backends.cudnn.benchmark = False
+        engine_chal = PPOEngine(
+            mortal,
+            actor_critic,
+            is_oracle=False,
+            version=self.chal_version,
+            device=device,
+            enable_amp=True,
+            enable_rule_based_agari_guard=True,
+            name='mortal',
+            eval_mode=True,
+        )
+
+        if clear_log_dir:
+            if path.isdir(self.log_dir):
+                shutil.rmtree(self.log_dir)
+        else:
+            os.makedirs(self.log_dir, exist_ok=True)
+
+        env = OneVsThree(
+            disable_progress_bar=False,
+            log_dir=self.log_dir,
+        )
+        champion = engine_chal if self.self_play else self.baseline_engine
+        env.py_vs_py(
+            challenger=engine_chal,
+            champion=champion,
+            seed_start=seed_start,
+            seed_count=seed_count,
+        )
+
+        stat = Stat.from_dir(self.log_dir, 'mortal')
+        self._last_chip_realize = self._compute_chip_realize(self.log_dir)
+        torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
+        return stat
+
 class TrainPlayer:
     def __init__(self):
         baseline_cfg = config['baseline']['train']
@@ -137,9 +185,9 @@ class TrainPlayer:
         self.train_seed = 10000
 
         self.seed_count = cfg['games'] // 4
-        self.boltzmann_epsilon = cfg['boltzmann_epsilon']
-        self.boltzmann_temp = cfg['boltzmann_temp']
-        self.top_p = cfg['top_p']
+        self.boltzmann_epsilon = cfg.get('boltzmann_epsilon', 0.0)
+        self.boltzmann_temp = cfg.get('boltzmann_temp', 0.05)
+        self.top_p = cfg.get('top_p', 1.0)
 
         self.repeats = cfg['repeats']
         self.repeat_counter = 0

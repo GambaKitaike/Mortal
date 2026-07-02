@@ -175,6 +175,13 @@ $ git diff upstream/main --stat
 
 ---
 
+## インフラ注意（online / eval 共通）
+
+- online 学習は server×1 / trainer×1 / client×3。起動前に `pkill` と `ss -tlnp | grep 5000` で残党ゼロ確認必須（`freeparlor/scripts/run_ppo_p2_smoke.sh`）。
+- PPO eval_sanity（100局自己対戦）は server/client 不要の単独 Python だが、**同じ起動前チェックを必須**（`freeparlor/scripts/run_eval_ppo_smoke_sanity.sh`）。残存 server が GPU/ポートを占有すると無言ハングしうる。
+
+---
+
 ## 注意・ライセンス
 
 - 土台は [Mortal](https://github.com/Equim-chan/Mortal)（**AGPL-3.0**）。本リポジトリも AGPL に従う。

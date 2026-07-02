@@ -34,5 +34,6 @@ _ppo_defaults = {
     'lr': 3e-4,
     'init_checkpoint': '',
     'trajectory_glob': '',
+    'max_steps': 0,
 }
 config.setdefault('ppo', {}).update({k: v for k, v in _ppo_defaults.items() if k not in config.get('ppo', {})})

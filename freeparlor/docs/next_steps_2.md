@@ -137,6 +137,8 @@ reward = α·(素点/1000) + β·(チップ枚数 × 5.0) + γ·順位点 + opp(
   解消済み（client3並列でdrain空待ち≈0）。warmup2000≈50分、step/秒≈0.67。
 - **インフラ注意**: online は stale プロセス混入・drain競合の事故が頻発した。
   各run起動前に pkill + `ss -tlnp | grep 5000` で残党ゼロ確認、buffer/drainクリア必須。
+  **eval_sanity も同様**（`run_eval_ppo_smoke_sanity.sh` が起動前チェックを実施）。
+  server/client 不要の単独プロセスだが、残存 server が GPU/ポートを占有するとハングする。
 - 比較は**打牌統計**で（自己対戦avg_rankは常に≈2.5）。
   ※学習時test_play(grp_baseline3席)はavg_rank≈1.0、これは参考外。
 
