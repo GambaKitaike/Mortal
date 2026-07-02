@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from config import config
 from libriichi.stat import Stat
-from model import ActorCritic, Brain
+from model import ActorCritic, Brain, load_ppo_from_mortal_checkpoint
 from player import TestPlayer
 
 
@@ -41,32 +41,42 @@ def count_logs(log_dir: Path) -> int:
     return sum(1 for _ in log_dir.glob('*.json.gz'))
 
 
+def load_checkpoint(state_file: Path, mortal: Brain, ac: ActorCritic, device: torch.device) -> int:
+    state = torch.load(state_file, weights_only=True, map_location=device)
+    mortal.load_state_dict(state['mortal'])
+    if 'actor_critic' in state:
+        ac.load_state_dict(state['actor_critic'])
+    else:
+        load_ppo_from_mortal_checkpoint(ac, str(state_file), map_location=device)
+    return int(state.get('steps', 0))
+
+
 def main():
     run_dir = Path(config['control']['state_file']).parent
-    log_path = run_dir / 'logs' / 'eval_sanity.log'
+    eval_label = os.environ.get('EVAL_LABEL', 'step400')
+    state_file = Path(os.environ.get('EVAL_CHECKPOINT', config['control']['state_file']))
+    log_path = run_dir / 'logs' / f'eval_sanity_{eval_label}.log'
     log = setup_logging(log_path)
 
-    log.info('eval_sanity: 起動')
+    log.info('eval_sanity: 起動 label=%s', eval_label)
     log.info('config 読了 (MORTAL_CFG=%s)', os.environ.get('MORTAL_CFG', 'config.toml'))
+    log.info('checkpoint=%s', state_file)
     log.info('device=%s games=%s log_dir=%s',
              config['control']['device'],
              config['test_play']['games'],
              config['test_play']['log_dir'])
 
     device = torch.device(config['control']['device'])
-    state_file = config['control']['state_file']
     total_hanchans = config['test_play']['games'] // 4
     batch_size = 10
     log_dir = Path(config['test_play']['log_dir'])
 
     log.info('checkpoint ロード開始: %s', state_file)
-    state = torch.load(state_file, weights_only=True, map_location=device)
     version = config['control']['version']
     mortal = Brain(version=version, **config['resnet']).to(device).eval()
     ac = ActorCritic(version=version, tau=config['ppo']['tau_init']).to(device).eval()
-    mortal.load_state_dict(state['mortal'])
-    ac.load_state_dict(state['actor_critic'])
-    log.info('checkpoint ロード完了: steps=%s', state.get('steps', '?'))
+    ckpt_steps = load_checkpoint(state_file, mortal, ac, device)
+    log.info('checkpoint ロード完了: steps=%s', ckpt_steps)
 
     tp = TestPlayer()
     log.info('arena 起動: %d hanchans (%d局ずつ進捗ログ)', total_hanchans, batch_size)
@@ -96,6 +106,8 @@ def main():
     log.info('riichi_rate=%.2f%%', stat.riichi_rate * 100)
     log.info('eval_sanity: 完了')
 
+    print(f'label={eval_label}')
+    print(f'checkpoint={state_file}')
     print(f'avg_rank={stat.avg_rank:.4f}')
     print(f'houjuu_rate={stat.houjuu_rate * 100:.2f}%')
     print(f'agari_rate={stat.agari_rate * 100:.2f}%')

@@ -1,6 +1,7 @@
 import prelude
 
 import logging
+import os
 import socket
 import torch
 import numpy as np
@@ -30,7 +31,16 @@ def _load_heads(rsp, version, device):
     return dqn
 
 
-def _finalize_ppo_trajectories(engine, file_list, param_version):
+def _log_file_game_key(file_path: str) -> str:
+    base = path.basename(file_path)
+    if base.endswith('.json.gz'):
+        return base[:-len('.json.gz')]
+    if base.endswith('.mjson'):
+        return base[:-len('.mjson')]
+    return path.splitext(base)[0]
+
+
+def _finalize_ppo_trajectories(engine, file_list, param_version, *, client_label=''):
     from libriichi.dataset import GameplayLoader
     from chip_from_log import load_kyoku_chip_deltas_from_log
     from model import GRP
@@ -38,7 +48,9 @@ def _finalize_ppo_trajectories(engine, file_list, param_version):
     from ppo_transport import numpy_trajectory_to_batch, pack_trajectory
 
     pending = engine.drain_pending()
-    if not pending:
+    pending_by_game = pending if isinstance(pending, dict) else None
+    pending_flat = pending if isinstance(pending, list) else []
+    if not pending_by_game and not pending_flat:
         return {}
 
     grp = GRP(**config['grp']['network'])
@@ -55,14 +67,28 @@ def _finalize_ppo_trajectories(engine, file_list, param_version):
     loader = GameplayLoader(version=config['control']['version'], player_names=['trainee'])
     trajectories = {}
     cursor = 0
-    for file_path in file_list:
+    for file_path in sorted(file_list):
+        game_key = _log_file_game_key(file_path)
         data = loader.load_gz_log_files([file_path])
         for game in data[0]:
             game_size = len(game.take_obs())
-            steps = pending[cursor:cursor + game_size]
-            cursor += game_size
+            if pending_by_game is not None:
+                steps = pending_by_game.pop(game_key, None)
+                if steps is None:
+                    logging.warning(
+                        'trajectory game key missing (%s), skipping game client=%s file=%s',
+                        game_key, client_label, file_path,
+                    )
+                    continue
+            else:
+                steps = pending_flat[cursor:cursor + game_size]
+                cursor += game_size
+
             if len(steps) != game_size:
-                logging.warning('trajectory step count mismatch, skipping game')
+                logging.warning(
+                    'trajectory step count mismatch (%s/%s), skipping game client=%s file=%s',
+                    len(steps), game_size, client_label, file_path,
+                )
                 continue
 
             grp_obj = game.take_grp()
@@ -96,6 +122,13 @@ def _finalize_ppo_trajectories(engine, file_list, param_version):
             traj_name = path.basename(file_path).replace('.json.gz', '.traj').replace('.mjson', '.traj')
             trajectories[traj_name] = pack_trajectory(batch)
 
+    if pending_by_game:
+        for game_key, orphan_steps in pending_by_game.items():
+            logging.warning(
+                'trajectory orphan steps (%s steps) for game_id=%s client=%s',
+                len(orphan_steps), game_key, client_label,
+            )
+
     return trajectories
 
 
@@ -106,6 +139,7 @@ def main():
     num_blocks = config['resnet']['num_blocks']
     conv_channels = config['resnet']['conv_channels']
     use_ppo = _ppo_enabled()
+    client_label = os.environ.get('TRAIN_PLAY_PROFILE', 'default')
 
     mortal = Brain(version=version, num_blocks=num_blocks, conv_channels=conv_channels).to(device).eval()
     head = None
@@ -152,10 +186,13 @@ def main():
                 version=version,
                 device=device,
                 enable_amp=True,
+                enable_quick_eval=False,
                 name='trainee',
             )
             rankings, file_list = train_player.train_play_ppo(engine, device)
-            logs = _finalize_ppo_trajectories(engine, file_list, param_version)
+            logs = _finalize_ppo_trajectories(
+                engine, file_list, param_version, client_label=client_label,
+            )
         else:
             rankings, file_list = train_player.train_play(mortal, head, device, beta_sel=beta_sel)
             logs = {}

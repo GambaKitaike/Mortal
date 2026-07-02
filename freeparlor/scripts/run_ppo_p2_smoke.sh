@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
 # PPO P2 smoke — server×1 / trainer×1 / client×3
+# Launches in tmux unless MORTAL_FOREGROUND=1.
 set -euo pipefail
 
 RUN_DIR="/home/gamba/mahjong/runs/ppo/smoke_p2"
 CFG="$RUN_DIR/config.toml"
 LOG_DIR="$RUN_DIR/logs"
-NUM_CLIENTS=3
+NUM_CLIENTS="${NUM_CLIENTS:-3}"
 REPO="/home/gamba/mahjong/Mortal"
+TMUX_SESSION="${TMUX_SESSION:-ppo_p2_smoke}"
+
+if [[ -z "${MORTAL_FOREGROUND:-}" ]]; then
+  if ! command -v tmux >/dev/null; then
+    echo "ERROR: tmux required (or set MORTAL_FOREGROUND=1)"
+    exit 1
+  fi
+  tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
+  tmux new-session -d -s "$TMUX_SESSION" \
+    "MORTAL_FOREGROUND=1 NUM_CLIENTS=$NUM_CLIENTS TMUX_SESSION=$TMUX_SESSION bash $0; echo exit=\$?; exec bash"
+  echo "Started in tmux session: $TMUX_SESSION"
+  echo "  attach: tmux attach -t $TMUX_SESSION"
+  echo "  log:    tail -f $LOG_DIR/trainer.log"
+  exit 0
+fi
 
 export MORTAL_CFG="$CFG"
 export PYTHONPATH="$REPO/mortal"
@@ -29,7 +45,9 @@ trap cleanup EXIT
 echo "=== Stopping stale processes ==="
 pkill -f "run_train_ppo.py" 2>/dev/null || true
 pkill -f "run_client.py" 2>/dev/null || true
+pkill -f "run_server.py" 2>/dev/null || true
 pkill -f "smoke_p2/config.toml" 2>/dev/null || true
+pkill -f "eval_ppo_smoke_sanity.py" 2>/dev/null || true
 fuser -k 5000/tcp 2>/dev/null || true
 sleep 3
 if ss -tlnp | grep -q 5000; then
@@ -37,7 +55,12 @@ if ss -tlnp | grep -q 5000; then
   ss -tlnp | grep 5000
   exit 1
 fi
-echo "port 5000 clear"
+if nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -q '[0-9]'; then
+  echo "ERROR: GPU compute processes still running (single-stream rule)"
+  nvidia-smi
+  exit 1
+fi
+echo "port 5000 clear, GPU idle"
 
 echo "=== Setup run dir ==="
 mkdir -p "$RUN_DIR"/{tb,test_play,buffer,drain}
@@ -122,13 +145,6 @@ while (( $(date +%s) < DEADLINE )); do
   fi
   if (( steps >= 400 )); then
     echo "reached step $steps"
-    echo "waiting for trainer final test_play (up to 10min)..."
-    for _ in $(seq 1 60); do
-      if grep -q 'avg rank:' "$LOG_DIR/trainer.log" 2>/dev/null; then
-        break
-      fi
-      sleep 10
-    done
     break
   fi
   sleep 30

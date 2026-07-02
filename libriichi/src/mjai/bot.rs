@@ -47,8 +47,11 @@ impl Bot {
             json::from_str(line).with_context(|| format!("failed to parse event {line}"))?;
 
         match data.event {
-            Event::StartGame { .. } => {
-                self.agent.start_game(0)?;
+            Event::StartGame { seed, .. } => {
+                let game_key = seed
+                    .map(|(s, k)| format!("{}_{:#x}_bot", s, k))
+                    .unwrap_or_else(|| "bot".to_string());
+                self.agent.start_game(0, &game_key)?;
             }
             Event::EndKyoku => {
                 self.log.clear();

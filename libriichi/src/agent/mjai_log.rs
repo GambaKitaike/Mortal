@@ -129,7 +129,8 @@ impl BatchAgent for MjaiLogBatchAgent {
         Ok(event)
     }
 
-    fn start_game(&mut self, index: usize) -> Result<()> {
+    fn start_game(&mut self, index: usize, game_key: &str) -> Result<()> {
+        let _ = game_key;
         Python::with_gil(|py| {
             self.engine
                 .bind_borrowed(py)

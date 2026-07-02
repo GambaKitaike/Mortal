@@ -130,9 +130,17 @@ reward = α·(素点/1000) + β·(チップ枚数 × 5.0) + γ·順位点 + opp(
 ## 7. 環境メモ
 - 作業箱 `wsl -d mahjong` のみ。ユーザー小文字 `gamba`(`/home/gamba`)。
 - リポジトリ `/home/gamba/mahjong/Mortal`。`conda activate mortal`。
+- **WSL2 メモリ**: `.wslconfig` `memory=24GB` / `swap=16GB`（32GB 禁止・ホスト総量32GB）。
+  変更後は `wsl --shutdown` → 再起動 → `nvidia-smi` で GPU 確認。
 - 学習は `runs/` の spawn ランチャ経由（WSL2 CUDA fork回避）。
 - libriichi改修後: `cargo build -p libriichi --lib --release`
   → `cp target/release/deps/libriichi.so mortal/libriichi.so`。
+- **GPU ワークロードは常に1系統**: 学習（server/trainer/client）と eval（OneVsThree 自己対戦）
+  の**同時実行禁止**。OOM 回避のため、eval 完走後に学習を起動する（逆も同様）。
+- **診断/スモーク config**: inline `test_play` 無効 = `control.test_every > ppo.max_steps`
+  （trainer 終了時の arena 400 局を走らせない）。評価は `run_eval_ppo_smoke_sanity.sh` で別途。
+- **tmux 必須**: 学習・eval とも `run_ppo_p2_smoke.sh` / `run_eval_ppo_smoke_sanity.sh` が
+  自動で tmux セッション起動（Cursor 切断と分離）。`tmux attach -t <session>` で監視。
 - **online 3プロセス構成**: server×1 / trainer×1 / client×3。RTX5060単機で生成律速
   解消済み（client3並列でdrain空待ち≈0）。warmup2000≈50分、step/秒≈0.67。
 - **インフラ注意**: online は stale プロセス混入・drain競合の事故が頻発した。

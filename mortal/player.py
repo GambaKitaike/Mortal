@@ -227,7 +227,9 @@ class TrainPlayer:
             self.repeat_counter = 0
 
         rankings = np.array(rankings)
-        file_list = list(map(lambda p: path.join(self.log_dir, p), os.listdir(self.log_dir)))
+        file_list = sorted(
+            path.join(self.log_dir, p) for p in os.listdir(self.log_dir)
+        )
 
         torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
         return rankings, file_list
@@ -253,7 +255,9 @@ class TrainPlayer:
             self.repeat_counter = 0
 
         rankings = np.array(rankings)
-        file_list = list(map(lambda p: path.join(self.log_dir, p), os.listdir(self.log_dir)))
+        file_list = sorted(
+            path.join(self.log_dir, p) for p in os.listdir(self.log_dir)
+        )
 
         torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
         return rankings, file_list

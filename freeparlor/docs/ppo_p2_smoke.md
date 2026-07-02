@@ -1,8 +1,9 @@
-# PPO P2 スモーク — 結果 (2026-07-02)
+# PPO P2 スモーク — 結果 (2026-07-02, OOM 対策後更新)
 
 **設計書:** `ppo_migration_design.md` §7 P2  
 **ブランチ:** `ppo-migration`  
-**run dir:** `/home/gamba/mahjong/runs/ppo/smoke_p2/`
+**run dir:** `/home/gamba/mahjong/runs/ppo/smoke_p2/`  
+**診断詳細:** `ppo_p2_diag.md`（OOM 対策・control eval・計装再走）
 
 ---
 
@@ -122,22 +123,37 @@ conda run --no-capture-output -n mortal python \
 
 > **Q: P2 完了条件（NaN 無し・ratio 正常・エントロピー健全・avg_rank 崩壊無し・chip/mismatch エラー 0）を満たしたか？**
 
-**No（条件付き部分合格）**
+**No（条件付き部分合格 → OOM 対策後に改善）**
 
-| 条件 | 結果 | 証跡 |
+| 条件 | 初回 | OOM 対策後 (2026-07-02 再走) |
 |---|---|---|
-| NaN 無し | **Yes** | trainer.log, nan_errors=0 |
-| ratio 正常（clip <~30%） | **No** | clip 平均 56.5%、max 85.2% |
-| エントロピー健全 | **Yes** | H: 1.01 → 1.62（崩落なし） |
-| avg_rank 崩壊無し | **Yes** | eval avg_rank=2.5000 |
-| chip エラー 0 | **Yes** | client logs, chip_errors=0 |
-| mismatch エラー 0 | **No** | 13 件（client WARNING） |
+| NaN 無し | **Yes** | **Yes** |
+| ratio 正常（clip <~30%） | **No** (56.5%) | **改善** (step399 epoch4 clip≈29%, tb@400=33%) |
+| エントロピー健全 | **Yes** | **Yes** |
+| avg_rank 崩壊無し | **Yes** (2.5) | **Yes** (init eval 2.5) |
+| chip エラー 0 | **Yes** | **Yes** |
+| mismatch エラー 0 | **No** (13) | **Yes** (0) — 【2】正式レビュー待ち |
+| OOM なしで 400 step | **No** (21:04 OOM) | **Yes** (inline test_play 無効 + swap16GB) |
 
-**総評:** PPO 配管（400 step 学習・checkpoint 保存・100 局 eval）は動作確認済み。clip 比率と trajectory mismatch は P3 前に要調査。eval ハングはログ/起動前チェック改修で再発防止。
+**control eval 判定:** init fuuro=**17.29%** → 学習が鳴きを殺す（eval 経路バグではない）。  
+**総評:** 配管は動作。clip は lag 計装で epoch1 から ~29%。P3 前に fuuro 崩壊原因と mismatch【2】レビュー。
 
 ---
 
-## 7. 再現コマンド
+## 7. OOM 対策（2026-07-02）
+
+| 対策 | 内容 |
+|---|---|
+| swap 16GB | `.wslconfig` swap=8→16GB（memory=24GB 据え置き） |
+| GPU 単系統 | 学習と eval 同時禁止（スクリプト起動前チェック） |
+| inline test_play 無効 | `test_every=100000 > max_steps=400` + trainer 終了時 skip |
+| tmux | 学習 `ppo_p2_smoke` / eval `ppo_eval_*` |
+
+前回 OOM: step400 到達後 inline test_play + client×3 残存で 24GB 超過。
+
+---
+
+## 8. 再現コマンド
 
 ```bash
 # 学習（400 step）

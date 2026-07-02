@@ -36,6 +36,11 @@ def train_ppo():
     max_steps = ppo_cfg.get('max_steps') or 0
     state_file = config['control']['state_file']
     eps_clip = ppo_cfg['eps_clip']
+    ppo_epochs = ppo_cfg.get('ppo_epochs', 1)
+    minibatch_size = ppo_cfg.get('minibatch_size', 0)
+    diag_log_path = Path(config['control']['state_file']).parent / 'logs' / 'ppo_diag.jsonl'
+    diag_log_path.parent.mkdir(parents=True, exist_ok=True)
+    trainer_param_version = 0
 
     mortal = Brain(version=version, **config['resnet']).to(device)
     actor_critic = ActorCritic(
@@ -94,6 +99,7 @@ def train_ppo():
 
     if online:
         submit_param(mortal, actor_critic, is_idle=True, beta_sel=0.0, use_ppo=True)
+        trainer_param_version = 1
         logging.info('param has been submitted')
 
     def save_checkpoint():
@@ -149,9 +155,16 @@ def train_ppo():
         writer.flush()
         return stat
 
+    def _append_diag(record: dict):
+        import json
+        record['trainer_step'] = steps
+        with diag_log_path.open('a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
     def train_on_trajectories(traj: TrajectoryBatch):
         nonlocal steps
         nonlocal stat_count
+        nonlocal trainer_param_version
 
         obs = traj.obs.to(device=device, dtype=torch.float32)
         actions = traj.action.to(device=device)
@@ -159,6 +172,17 @@ def train_ppo():
         logp_old = traj.logp_old.to(device=device)
         rewards = traj.reward.to(device=device)
         dones = traj.done.to(device=device)
+        param_lag = trainer_param_version - traj.param_version
+        _append_diag({
+            'event': 'batch_lag',
+            'param_version': traj.param_version,
+            'trainer_param_version': trainer_param_version,
+            'lag': param_lag,
+            'batch_size': int(obs.shape[0]),
+        })
+        logging.info(
+            f'ppo batch lag={param_lag} (client pv={traj.param_version}, trainer pv={trainer_param_version})'
+        )
 
         with torch.inference_mode():
             phi_all = mortal(obs)
@@ -191,65 +215,125 @@ def train_ppo():
         advantages = torch.cat(adv_parts).to(device)
         returns = torch.cat(ret_parts).to(device)
 
-        with torch.autocast(device.type, enabled=enable_amp):
-            phi = mortal(obs)
-            logits, values = actor_critic(phi, masks)
-            losses = ppo_loss(
-                logits,
-                values,
-                actions,
-                masks,
-                logp_old,
-                advantages,
-                returns,
-                eps_clip=eps_clip,
-                c_vf=ppo_cfg['c_vf'],
-                c_ent=ppo_cfg['c_ent'],
-                huber_delta=ppo_cfg['huber_delta'],
+        n = obs.shape[0]
+        mb_size = minibatch_size if minibatch_size and minibatch_size < n else n
+        epoch_metrics = []
+        explained_var = float('nan')
+
+        for epoch in range(ppo_epochs):
+            perm = torch.randperm(n, device=device)
+            epoch_clip = []
+            epoch_ratio_mean = []
+            epoch_ratio_std = []
+            epoch_total = epoch_pi = epoch_vf = epoch_ent = 0.0
+            mb_count = 0
+
+            for mb_start in range(0, n, mb_size):
+                idx = perm[mb_start:mb_start + mb_size]
+                mb_obs = obs[idx]
+                mb_actions = actions[idx]
+                mb_masks = masks[idx]
+                mb_logp_old = logp_old[idx]
+                mb_adv = advantages[idx]
+                mb_ret = returns[idx]
+
+                with torch.autocast(device.type, enabled=enable_amp):
+                    phi = mortal(mb_obs)
+                    logits, values = actor_critic(phi, mb_masks)
+                    losses = ppo_loss(
+                        logits,
+                        values,
+                        mb_actions,
+                        mb_masks,
+                        mb_logp_old,
+                        mb_adv,
+                        mb_ret,
+                        eps_clip=eps_clip,
+                        c_vf=ppo_cfg['c_vf'],
+                        c_ent=ppo_cfg['c_ent'],
+                        huber_delta=ppo_cfg['huber_delta'],
+                    )
+
+                for name, val in losses.items():
+                    if not torch.isfinite(val).all():
+                        raise FloatingPointError(f'non-finite {name} at step {steps + 1} epoch {epoch + 1}')
+
+                with torch.inference_mode():
+                    logp = action_log_probs(logits, mb_masks, mb_actions)
+                    ratio = (logp - mb_logp_old).exp()
+                    clip_fraction = ((ratio - 1.0).abs() > eps_clip).float().mean().item()
+                    ratio_mean = ratio.mean().item()
+                    ratio_std = ratio.std(unbiased=False).item()
+                    ret_var = mb_ret.var(unbiased=False)
+                    if ret_var > 0:
+                        explained_var = (1 - (mb_ret - values).var(unbiased=False) / ret_var).item()
+
+                optimizer.zero_grad(set_to_none=True)
+                scaler.scale(losses['total']).backward()
+                if max_grad_norm > 0:
+                    scaler.unscale_(optimizer)
+                    clip_grad_norm_(
+                        list(mortal.parameters()) + list(actor_critic.parameters()),
+                        max_grad_norm,
+                    )
+                scaler.step(optimizer)
+                scaler.update()
+
+                epoch_clip.append(clip_fraction)
+                epoch_ratio_mean.append(ratio_mean)
+                epoch_ratio_std.append(ratio_std)
+                epoch_total += losses['total'].item()
+                epoch_pi += losses['policy_loss'].item()
+                epoch_vf += losses['value_loss'].item()
+                epoch_ent += losses['entropy'].item()
+                mb_count += 1
+
+            if mb_count == 0:
+                continue
+
+            clip_avg = sum(epoch_clip) / len(epoch_clip)
+            ratio_mean_avg = sum(epoch_ratio_mean) / len(epoch_ratio_mean)
+            ratio_std_avg = sum(epoch_ratio_std) / len(epoch_ratio_std)
+            epoch_metrics.append({
+                'epoch': epoch + 1,
+                'clip_fraction': clip_avg,
+                'ratio_mean': ratio_mean_avg,
+                'ratio_std': ratio_std_avg,
+            })
+            _append_diag({
+                'event': 'ppo_epoch',
+                'epoch': epoch + 1,
+                'clip_fraction': clip_avg,
+                'ratio_mean': ratio_mean_avg,
+                'ratio_std': ratio_std_avg,
+                'param_lag': param_lag,
+            })
+            logging.info(
+                f'ppo step {steps + 1} epoch {epoch + 1}/{ppo_epochs}: '
+                f'clip={clip_avg:.4f} ratio={ratio_mean_avg:.4f}±{ratio_std_avg:.4f}'
             )
 
-        for name, val in losses.items():
-            if not torch.isfinite(val).all():
-                raise FloatingPointError(f'non-finite {name} at step {steps + 1}')
+            if epoch == 0:
+                stats['total'] += epoch_total / mb_count
+                stats['policy_loss'] += epoch_pi / mb_count
+                stats['value_loss'] += epoch_vf / mb_count
+                stats['entropy'] += epoch_ent / mb_count
+                stats['clip_fraction'] += clip_avg
+                stats['explained_variance'] += explained_var
+                stat_count += 1
 
-        with torch.inference_mode():
-            logp = action_log_probs(logits, masks, actions)
-            ratio = (logp - logp_old).exp()
-            clip_fraction = ((ratio - 1.0).abs() > eps_clip).float().mean().item()
-            ret_var = returns.var(unbiased=False)
-            if ret_var > 0:
-                explained_var = (1 - (returns - values).var(unbiased=False) / ret_var).item()
-            else:
-                explained_var = float('nan')
-
-        optimizer.zero_grad(set_to_none=True)
-        scaler.scale(losses['total']).backward()
-        if max_grad_norm > 0:
-            scaler.unscale_(optimizer)
-            clip_grad_norm_(
-                list(mortal.parameters()) + list(actor_critic.parameters()),
-                max_grad_norm,
-            )
-        scaler.step(optimizer)
-        scaler.update()
         steps += 1
 
-        stats['total'] += losses['total'].item()
-        stats['policy_loss'] += losses['policy_loss'].item()
-        stats['value_loss'] += losses['value_loss'].item()
-        stats['entropy'] += losses['entropy'].item()
-        stats['clip_fraction'] += clip_fraction
-        stats['explained_variance'] += explained_var
-        stat_count += 1
-
-        logging.info(
-            f'ppo step {steps}: total={losses["total"].item():.4f} '
-            f'pi={losses["policy_loss"].item():.4f} vf={losses["value_loss"].item():.4f} '
-            f'H={losses["entropy"].item():.4f} clip={clip_fraction:.4f} ev={explained_var:.4f}'
-        )
+        if epoch_metrics:
+            logging.info(
+                f'ppo step {steps}: epoch1_clip={epoch_metrics[0]["clip_fraction"]:.4f} '
+                f'epoch{ppo_epochs}_clip={epoch_metrics[-1]["clip_fraction"]:.4f} '
+                f'ev={explained_var:.4f}'
+            )
 
         if online and steps % submit_every == 0:
             submit_param(mortal, actor_critic, is_idle=False, beta_sel=0.0, use_ppo=True)
+            trainer_param_version += 1
             logging.info('param has been submitted')
 
         if steps % save_every == 0:
@@ -260,6 +344,7 @@ def train_ppo():
 
             if online and steps % submit_every != 0:
                 submit_param(mortal, actor_critic, is_idle=False, beta_sel=0.0, use_ppo=True)
+                trainer_param_version += 1
                 logging.info('param has been submitted')
 
             if steps % test_every == 0:
@@ -307,7 +392,8 @@ def train_ppo():
     if stat_count:
         flush_stats()
     save_checkpoint()
-    if online and steps % test_every != 0:
+    inline_test_play = not (max_steps and test_every > max_steps)
+    if online and inline_test_play and steps % test_every != 0:
         run_test_play()
     if online and (max_steps and steps >= max_steps or steps % test_every == 0):
         sys.exit(0)

@@ -247,9 +247,11 @@ impl BatchGame {
             .zip(seeds)
             .enumerate()
             .map(|(game_idx, (idxs, &seed))| {
+                let split = ["a", "b", "c", "d"][game_idx % 4];
+                let game_key = format!("{}_{:#x}_{}", seed.0, seed.1, split);
                 let mut oracle_obs_versions = [None; 4];
                 for (i, idx) in idxs.iter().enumerate() {
-                    agents[idx.agent_idx].start_game(idx.player_id_idx)?;
+                    agents[idx.agent_idx].start_game(idx.player_id_idx, &game_key)?;
                     oracle_obs_versions[i] = agents[idx.agent_idx].oracle_obs_version();
                 }
 

@@ -29,6 +29,8 @@ gamma_disc = 1.0
 tau_init = 1.0
 huber_delta = 15.0
 lr = 3e-4
+ppo_epochs = 4
+minibatch_size = 512
 init_checkpoint = '/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth'
 max_steps = 400
 

@@ -44,6 +44,9 @@ struct SyncFields {
     masks: Vec<Array1<bool>>,
     action_idxs: Vec<usize>,
     kan_action_idxs: Vec<Option<usize>>,
+    game_keys: Vec<Option<String>>,
+    step_seqs: Vec<u32>,
+    step_metas: Vec<(String, u32, bool)>,
 }
 
 impl MortalBatchAgent {
@@ -85,6 +88,9 @@ impl MortalBatchAgent {
             masks: vec![],
             action_idxs: vec![0; size],
             kan_action_idxs: vec![None; size],
+            game_keys: vec![None; size],
+            step_seqs: vec![0; size],
+            step_metas: vec![],
         }));
 
         Ok(Self {
@@ -142,7 +148,8 @@ impl MortalBatchAgent {
                     .collect()
             });
 
-            let args = (states, masks, invisible_states);
+            let step_metas = mem::take(&mut sync_fields.step_metas);
+            let args = (states, masks, invisible_states, step_metas);
             self.engine
                 .bind_borrowed(py)
                 .call_method1(intern!(py, "react_batch"), args)
@@ -190,6 +197,14 @@ impl BatchAgent for MortalBatchAgent {
     #[inline]
     fn name(&self) -> String {
         self.name.clone()
+    }
+
+    #[inline]
+    fn start_game(&mut self, index: usize, game_key: &str) -> Result<()> {
+        let mut sync_fields = self.sync_fields.lock();
+        sync_fields.game_keys[index] = Some(game_key.to_string());
+        sync_fields.step_seqs[index] = 0;
+        Ok(())
     }
 
     #[inline]
@@ -268,8 +283,17 @@ impl BatchAgent for MortalBatchAgent {
                 masks,
                 action_idxs,
                 kan_action_idxs,
+                game_keys,
+                step_seqs,
+                step_metas,
             } = &mut *sync_fields.lock();
+            let game_key = game_keys
+                .get(index)
+                .and_then(|k| k.clone())
+                .unwrap_or_default();
             if let Some((kan_feature, kan_mask)) = kan {
+                let seq = step_seqs[index];
+                step_metas.push((game_key.clone(), seq, false));
                 kan_action_idxs[index] = Some(states.len());
                 states.push(kan_feature);
                 masks.push(kan_mask);
@@ -278,6 +302,11 @@ impl BatchAgent for MortalBatchAgent {
                 }
             }
 
+            let seq = step_seqs[index];
+            step_metas.push((game_key.clone(), seq, true));
+            if !game_key.is_empty() {
+                step_seqs[index] = seq + 1;
+            }
             action_idxs[index] = states.len();
             states.push(feature);
             masks.push(mask);
