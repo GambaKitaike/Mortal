@@ -30,6 +30,8 @@ class State:
     # fields below are protected by param_lock
     mortal_param: Optional[OrderedDict]
     dqn_param: Optional[OrderedDict]
+    actor_critic_param: Optional[OrderedDict]
+    ppo_enabled: bool
     beta_sel: float
     param_version: int
     idle_param_version: int
@@ -54,7 +56,9 @@ class Handler(BaseRequestHandler):
         with S.dir_lock:
             overflow = S.buffer_size >= S.capacity
             with S.param_lock:
-                has_param = S.mortal_param is not None and S.dqn_param is not None
+                has_param = S.mortal_param is not None and (
+                    S.dqn_param is not None or S.actor_critic_param is not None
+                )
         if overflow:
             self.send_msg({'status': 'samples overflow'})
             return
@@ -71,10 +75,14 @@ class Handler(BaseRequestHandler):
                 res = {
                     'status': 'ok',
                     'mortal': S.mortal_param,
-                    'dqn': S.dqn_param,
                     'beta_sel': S.beta_sel,
                     'param_version': S.param_version,
                 }
+                if S.ppo_enabled:
+                    res['ppo'] = True
+                    res['actor_critic'] = S.actor_critic_param
+                else:
+                    res['dqn'] = S.dqn_param
             torch.save(res, buf)
         self.send_msg(buf.getbuffer(), packed=True)
 
@@ -91,7 +99,13 @@ class Handler(BaseRequestHandler):
     def handle_submit_param(self, msg):
         with S.param_lock:
             S.mortal_param = msg['mortal']
-            S.dqn_param = msg['dqn']
+            S.ppo_enabled = bool(msg.get('ppo', False))
+            if S.ppo_enabled:
+                S.actor_critic_param = msg['actor_critic']
+                S.dqn_param = None
+            else:
+                S.dqn_param = msg['dqn']
+                S.actor_critic_param = None
             S.beta_sel = msg.get('beta_sel', 0.0)
             S.param_version += 1
             if msg['is_idle']:
@@ -149,6 +163,8 @@ def main():
         drain_generation = 0,
         mortal_param = None,
         dqn_param = None,
+        actor_critic_param = None,
+        ppo_enabled = False,
         beta_sel = 0.0,
         param_version = 0,
         idle_param_version = 0,

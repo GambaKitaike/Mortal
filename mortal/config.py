@@ -22,3 +22,17 @@ _control_defaults = {
     'huber_delta': 15.0,
 }
 config.setdefault('control', {}).update({k: v for k, v in _control_defaults.items() if k not in config['control']})
+_ppo_defaults = {
+    'enabled': False,
+    'eps_clip': 0.2,
+    'c_vf': 0.5,
+    'c_ent': 0.01,
+    'gae_lambda': 0.95,
+    'gamma_disc': 1.0,
+    'tau_init': 1.0,
+    'huber_delta': 15.0,
+    'lr': 3e-4,
+    'init_checkpoint': '',
+    'trajectory_glob': '',
+}
+config.setdefault('ppo', {}).update({k: v for k, v in _ppo_defaults.items() if k not in config.get('ppo', {})})

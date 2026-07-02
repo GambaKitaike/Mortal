@@ -183,3 +183,29 @@ class TrainPlayer:
 
         torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
         return rankings, file_list
+
+    def train_play_ppo(self, engine, device):
+        torch.backends.cudnn.benchmark = False
+        if path.isdir(self.log_dir):
+            shutil.rmtree(self.log_dir)
+
+        env = OneVsThree(
+            disable_progress_bar = False,
+            log_dir = self.log_dir,
+        )
+        rankings = env.py_vs_py(
+            challenger = engine,
+            champion = self.baseline_engine,
+            seed_start = (self.train_seed, self.train_key),
+            seed_count = self.seed_count,
+        )
+        self.repeat_counter += 1
+        if self.repeat_counter == self.repeats:
+            self.train_seed += self.seed_count
+            self.repeat_counter = 0
+
+        rankings = np.array(rankings)
+        file_list = list(map(lambda p: path.join(self.log_dir, p), os.listdir(self.log_dir)))
+
+        torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
+        return rankings, file_list

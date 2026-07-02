@@ -203,7 +203,119 @@ def dueling_q(v, a, mask):
 def q_total(q_main, q_chip, beta_sel):
     return q_main + beta_sel * q_chip
 
+def _mlp_head(in_features, hidden_size, out_features):
+    return nn.Sequential(
+        nn.Linear(in_features, hidden_size),
+        nn.Mish(inplace=True),
+        nn.Linear(hidden_size, out_features),
+    )
+
+class PolicyHead(nn.Module):
+    """Policy logits over ACTION_SPACE; MLP layout matches DQN a_head per version."""
+
+    def __init__(self, *, version=1):
+        super().__init__()
+        self.version = version
+        match version:
+            case 1:
+                self.net = nn.Linear(512, ACTION_SPACE)
+            case 2 | 3:
+                hidden_size = 512 if version == 2 else 256
+                self.net = _mlp_head(1024, hidden_size, ACTION_SPACE)
+            case 4:
+                self.net = nn.Linear(1024, ACTION_SPACE)
+            case _:
+                raise ValueError(f'Unexpected version {version}')
+
+    def forward(self, phi: Tensor) -> Tensor:
+        return self.net(phi)
+
+class ValueHead(nn.Module):
+    """Scalar state value; MLP layout matches DQN v_head per version."""
+
+    def __init__(self, *, version=1):
+        super().__init__()
+        self.version = version
+        match version:
+            case 1:
+                self.net = nn.Linear(512, 1)
+            case 2 | 3:
+                hidden_size = 512 if version == 2 else 256
+                self.net = _mlp_head(1024, hidden_size, 1)
+            case 4:
+                self.net = nn.Linear(1024, 1)
+            case _:
+                raise ValueError(f'Unexpected version {version}')
+
+    def forward(self, phi: Tensor) -> Tensor:
+        return self.net(phi).squeeze(-1)
+
+class ActorCritic(nn.Module):
+    def __init__(self, *, version=1, tau: float = 1.0):
+        super().__init__()
+        self.version = version
+        self.policy_head = PolicyHead(version=version)
+        self.value_head = ValueHead(version=version)
+        self.tau = tau
+
+    def set_tau(self, tau: float):
+        self.tau = tau
+
+    def forward(self, phi: Tensor, mask: Tensor) -> Tuple[Tensor, Tensor]:
+        logits = self.policy_head(phi) / self.tau
+        value = self.value_head(phi)
+        return logits, value
+
+    def policy_logits(self, phi: Tensor) -> Tensor:
+        return self.policy_head(phi) / self.tau
+
+def load_actor_critic_from_dqn_checkpoint(
+    actor_critic: ActorCritic,
+    dqn_state: dict[str, Tensor],
+    *,
+    version: int,
+) -> None:
+    """Copy a_head → policy_head and v_head → value_head from a DQN checkpoint."""
+    if version == 4:
+        net_w = dqn_state['net.weight']
+        net_b = dqn_state['net.bias']
+        actor_critic.policy_head.net.weight.data.copy_(net_w[1:])
+        actor_critic.policy_head.net.bias.data.copy_(net_b[1:])
+        actor_critic.value_head.net.weight.data.copy_(net_w[:1])
+        actor_critic.value_head.net.bias.data.copy_(net_b[:1])
+        return
+
+    policy_sd = {}
+    value_sd = {}
+    for key, tensor in dqn_state.items():
+        if key.startswith('a_head.'):
+            policy_sd['net.' + key[len('a_head.'):]] = tensor
+        elif key.startswith('v_head.') and not key.startswith('v_chip_head.'):
+            value_sd['net.' + key[len('v_head.'):]] = tensor
+    actor_critic.policy_head.load_state_dict(policy_sd)
+    actor_critic.value_head.load_state_dict(value_sd)
+
+def load_ppo_from_mortal_checkpoint(
+    actor_critic: ActorCritic,
+    checkpoint_path: str,
+    *,
+    map_location='cpu',
+) -> dict:
+    """Load ActorCritic from a legacy mortal.pth (chip heads ignored).
+
+    strict=False applies only to keys absent from ActorCritic / slim DQN:
+      chip_net / v_chip_head / a_chip_head / chip_target / aux / optim state.
+    Required keys (current_dqn main heads) must match shapes.
+    """
+    state = torch.load(checkpoint_path, weights_only=True, map_location=map_location)
+    dqn_state = state['current_dqn']
+    version = state['config']['control']['version']
+    load_actor_critic_from_dqn_checkpoint(actor_critic, dqn_state, version=version)
+    return state
+
 class DQN(nn.Module):
+    """Legacy DQN main heads only (chip heads removed on ppo-migration)."""
+
     def __init__(self, *, version=1):
         super().__init__()
         self.version = version
@@ -211,8 +323,6 @@ class DQN(nn.Module):
             case 1:
                 self.v_head = nn.Linear(512, 1)
                 self.a_head = nn.Linear(512, ACTION_SPACE)
-                self.v_chip_head = nn.Linear(512, 1)
-                self.a_chip_head = nn.Linear(512, ACTION_SPACE)
             case 2 | 3:
                 hidden_size = 512 if version == 2 else 256
                 self.v_head = nn.Sequential(
@@ -225,126 +335,28 @@ class DQN(nn.Module):
                     nn.Mish(inplace=True),
                     nn.Linear(hidden_size, ACTION_SPACE),
                 )
-                self.v_chip_head = nn.Sequential(
-                    nn.Linear(1024, hidden_size),
-                    nn.Mish(inplace=True),
-                    nn.Linear(hidden_size, 1),
-                )
-                self.a_chip_head = nn.Sequential(
-                    nn.Linear(1024, hidden_size),
-                    nn.Mish(inplace=True),
-                    nn.Linear(hidden_size, ACTION_SPACE),
-                )
             case 4:
                 self.net = nn.Linear(1024, 1 + ACTION_SPACE)
                 nn.init.constant_(self.net.bias, 0)
-                self.chip_net = nn.Linear(1024, 1 + ACTION_SPACE)
-                nn.init.constant_(self.chip_net.bias, 0)
+            case _:
+                raise ValueError(f'Unexpected version {version}')
 
     def _main_heads(self, phi):
         if self.version == 4:
             return self.net(phi).split((1, ACTION_SPACE), dim=-1)
         return self.v_head(phi), self.a_head(phi)
 
-    def _chip_heads(self, phi):
-        if self.version == 4:
-            return self.chip_net(phi).split((1, ACTION_SPACE), dim=-1)
-        return self.v_chip_head(phi), self.a_chip_head(phi)
-
     def forward(self, phi, mask, *, return_q_chip=False):
         v, a = self._main_heads(phi)
         q = dueling_q(v, a, mask)
-        if not return_q_chip:
-            return q
-        v_c, a_c = self._chip_heads(phi)
-        q_chip = dueling_q(v_c, a_c, mask)
-        return q, q_chip
+        if return_q_chip:
+            raise NotImplementedError('chip heads removed on ppo-migration branch')
+        return q
 
-    def forward_chip(self, phi, mask):
-        v_c, a_c = self._chip_heads(phi)
-        return dueling_q(v_c, a_c, mask)
-
-    def chip_state_dict(self):
-        if self.version == 4:
-            return {'chip_net': self.chip_net.state_dict()}
-        return {
-            'v_chip_head': self.v_chip_head.state_dict(),
-            'a_chip_head': self.a_chip_head.state_dict(),
-        }
-
-    def load_chip_state_dict(self, state_dict, *, strict=True):
-        if self.version == 4:
-            self.chip_net.load_state_dict(state_dict['chip_net'], strict=strict)
-        else:
-            self.v_chip_head.load_state_dict(state_dict['v_chip_head'], strict=strict)
-            self.a_chip_head.load_state_dict(state_dict['a_chip_head'], strict=strict)
-
-class ChipDQNTarget(nn.Module):
-    """Target network for Q_chip heads only; phi comes from the online Brain."""
-
-    def __init__(self, dqn: DQN):
-        super().__init__()
-        self.version = dqn.version
-        match dqn.version:
-            case 1:
-                self.v_chip_head = nn.Linear(512, 1)
-                self.a_chip_head = nn.Linear(512, ACTION_SPACE)
-            case 2 | 3:
-                hidden_size = 512 if dqn.version == 2 else 256
-                self.v_chip_head = nn.Sequential(
-                    nn.Linear(1024, hidden_size),
-                    nn.Mish(inplace=True),
-                    nn.Linear(hidden_size, 1),
-                )
-                self.a_chip_head = nn.Sequential(
-                    nn.Linear(1024, hidden_size),
-                    nn.Mish(inplace=True),
-                    nn.Linear(hidden_size, ACTION_SPACE),
-                )
-            case 4:
-                self.chip_net = nn.Linear(1024, 1 + ACTION_SPACE)
-                nn.init.constant_(self.chip_net.bias, 0)
-
-    def forward(self, phi, mask):
-        if self.version == 4:
-            v, a = self.chip_net(phi).split((1, ACTION_SPACE), dim=-1)
-        else:
-            v = self.v_chip_head(phi)
-            a = self.a_chip_head(phi)
-        return dueling_q(v, a, mask)
-
-    def copy_from(self, dqn: DQN):
-        if dqn.version == 4:
-            self.chip_net.load_state_dict(dqn.chip_net.state_dict())
-        else:
-            self.v_chip_head.load_state_dict(dqn.v_chip_head.state_dict())
-            self.a_chip_head.load_state_dict(dqn.a_chip_head.state_dict())
-
-    def polyak_update(self, dqn: DQN, tau: float):
-        with torch.no_grad():
-            if dqn.version == 4:
-                for tgt, src in zip(self.chip_net.parameters(), dqn.chip_net.parameters()):
-                    tgt.lerp_(src, tau)
-            else:
-                for tgt, src in zip(self.v_chip_head.parameters(), dqn.v_chip_head.parameters()):
-                    tgt.lerp_(src, tau)
-                for tgt, src in zip(self.a_chip_head.parameters(), dqn.a_chip_head.parameters()):
-                    tgt.lerp_(src, tau)
-
-    def state_dict_for_save(self):
-        if self.version == 4:
-            return {'chip_net': self.chip_net.state_dict()}
-        return {
-            'v_chip_head': self.v_chip_head.state_dict(),
-            'a_chip_head': self.a_chip_head.state_dict(),
-        }
-
-    def load_from_saved(self, state_dict):
-        if self.version == 4:
-            self.chip_net.load_state_dict(state_dict['chip_net'])
-        else:
-            self.v_chip_head.load_state_dict(state_dict['v_chip_head'])
-            self.a_chip_head.load_state_dict(state_dict['a_chip_head'])
+def dqn_a_head_logits(dqn: DQN, phi: Tensor) -> Tensor:
+    if dqn.version == 4:
+        return dqn.net(phi)[:, 1:]
+    return dqn.a_head(phi)
 
 class GRP(nn.Module):
     def __init__(self, hidden_size=64, num_layers=2):

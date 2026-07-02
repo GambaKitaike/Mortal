@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""PPO P1 plumbing sanity checks (design §7.1)."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from io import StringIO
+from pathlib import Path
+
+import numpy as np
+import torch
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'mortal'))
+
+from libriichi.consts import ACTION_SPACE, obs_shape
+from model import (
+    ActorCritic,
+    Brain,
+    DQN,
+    GRP,
+    dqn_a_head_logits,
+    load_actor_critic_from_dqn_checkpoint,
+    load_ppo_from_mortal_checkpoint,
+)
+from ppo import compose_kyoku_reward, compute_gae, masked_softmax, action_log_probs
+from ppo_engine import PPOEngine
+from ppo_dataloader import assign_rewards_and_dones, recompute_logp_old
+from ppo_transport import TrajectoryBatch, pack_trajectory, unpack_trajectory
+from reward_calculator import RewardCalculator
+
+
+DEFAULT_CKPT = '/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth'
+
+
+def log(msg: str, buf: StringIO):
+    print(msg)
+    buf.write(msg + '\n')
+
+
+def check_pi0_match(ckpt: str, buf: StringIO, *, tau: float = 1.0, n: int = 32):
+    log('(1) π₀ consistency', buf)
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    conv_channels = state['config']['resnet']['conv_channels']
+    num_blocks = state['config']['resnet']['num_blocks']
+
+    mortal = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks).eval()
+    mortal.load_state_dict(state['mortal'])
+    dqn = DQN(version=version).eval()
+    dqn.load_state_dict(state['current_dqn'], strict=False)
+    ac = ActorCritic(version=version, tau=tau).eval()
+    load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+    c, w = obs_shape(version)
+    obs = torch.randn(n, c, w)
+    masks = torch.zeros(n, ACTION_SPACE, dtype=torch.bool)
+    for i in range(n):
+        legal = torch.randperm(ACTION_SPACE)[:8]
+        masks[i, legal] = True
+
+    with torch.inference_mode():
+        phi = mortal(obs)
+        a_logits = dqn_a_head_logits(dqn, phi) / tau
+        pi_logits, _ = ac(phi, masks)
+        p_ref = masked_softmax(a_logits, masks)
+        p_new = masked_softmax(pi_logits, masks)
+        assert torch.allclose(p_ref, p_new, atol=1e-5), 'π₀ mismatch'
+    log('  PASS: softmax(policy/τ) ≡ softmax(a_head/τ)', buf)
+
+
+def check_mask(buf: StringIO):
+    log('(2) illegal action mask', buf)
+    logits = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
+    mask = torch.tensor([[True, False, True, False]])
+    probs = masked_softmax(logits, mask)
+    assert (probs[~mask] == 0).all()
+    assert torch.allclose(probs[mask].sum(), torch.tensor(1.0), atol=1e-6)
+    log('  PASS: illegal actions have π=0', buf)
+
+
+def check_gae(buf: StringIO):
+    log('(3) GAE 3-step hand calc', buf)
+    rewards = torch.tensor([1.0, 2.0, 3.0])
+    values = torch.tensor([0.5, 1.0, 2.0, 0.0])
+    dones = torch.tensor([False, False, True])
+    adv, ret = compute_gae(rewards, values, dones, gamma=1.0, lam=0.95)
+
+    delta2 = rewards[2] - values[2]
+    adv2 = delta2
+    delta1 = rewards[1] + values[2] - values[1]
+    adv1 = delta1 + 0.95 * adv2
+    delta0 = rewards[0] + values[1] - values[0]
+    adv0 = delta0 + 0.95 * adv1
+    expected_adv = torch.tensor([adv0, adv1, adv2])
+    expected_ret = expected_adv + values[:-1]
+    assert torch.allclose(adv, expected_adv, atol=1e-6), f'adv {adv} vs {expected_adv}'
+    assert torch.allclose(ret, expected_ret, atol=1e-6)
+    log(f'  adv={adv.tolist()}', buf)
+    log('  PASS: GAE matches manual 3-step', buf)
+
+
+def check_logp_old(ckpt: str, buf: StringIO):
+    log('(4) logp_old client vs trainer', buf)
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    cfg = state['config']['resnet']
+    device = torch.device('cpu')
+
+    mortal = Brain(version=version, **cfg).eval()
+    mortal.load_state_dict(state['mortal'])
+    ac = ActorCritic(version=version, tau=1.0).eval()
+    load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+    c, w = obs_shape(version)
+    obs_np = np.random.randn(4, c, w).astype(np.float32)
+    masks_np = np.zeros((4, ACTION_SPACE), dtype=bool)
+    for i in range(4):
+        masks_np[i, np.random.choice(ACTION_SPACE, 6, replace=False)] = True
+
+    engine = PPOEngine(
+        mortal, ac, version=version, device=device,
+        boltzmann_epsilon=0.0,
+    )
+    actions, _, _, _ = engine.react_batch(
+        list(obs_np), list(masks_np), None,
+    )
+    client_steps = engine.drain_pending()
+    client_logp = np.array([s['logp_old'] for s in client_steps])
+
+    batch = TrajectoryBatch(
+        obs=torch.as_tensor(obs_np),
+        action=torch.as_tensor(actions, dtype=torch.int64),
+        logp_old=torch.as_tensor(client_logp),
+        mask=torch.as_tensor(masks_np),
+        reward=torch.zeros(4),
+        done=torch.tensor([False, False, False, True]),
+    )
+    trainer_logp = recompute_logp_old(batch, mortal, ac, device).numpy()
+    assert np.allclose(client_logp, trainer_logp, atol=1e-5), f'{client_logp} vs {trainer_logp}'
+    log('  PASS: client logp_old == trainer recompute', buf)
+
+
+def check_reward_compose(buf: StringIO, grp_state_file: str | None):
+    log('(5) reward composition vs calc_delta_blend', buf)
+    score_only = compose_kyoku_reward(0.5, 0.2, chip_delta=0.0)
+    chip_only = compose_kyoku_reward(0.0, 0.0, chip_delta=1.0)
+    mixed = compose_kyoku_reward(0.5, 0.2, chip_delta=1.0)
+    assert score_only == 0.7
+    assert chip_only == 5.0
+    assert mixed == 5.7
+    log('  PASS: compose helper unit cases', buf)
+
+    if grp_state_file is None or not Path(grp_state_file).exists():
+        log('  SKIP: calc_delta_blend cross-check (grp state missing)', buf)
+        return
+
+    grp = GRP(hidden_size=64, num_layers=2).eval()
+    grp.load_state_dict(torch.load(grp_state_file, weights_only=True, map_location='cpu')['model'])
+    calc = RewardCalculator(grp, pts=[35, 5, -15, -25], alpha=1.0, gamma_pt=1.0)
+    player_id = 0
+    grp_feature = np.array([
+        [0, 0, 0, 2.5, 2.5, 2.5, 2.5],
+        [1, 0, 0, 2.5, 2.5, 2.5, 2.6],
+    ], dtype=np.float64)
+    rank_by_player = np.array([0, 1, 2, 3])
+    final_scores = np.array([26000, 25000, 25000, 24000])
+
+    sotensu = calc.calc_delta_points(player_id, grp_feature, final_scores) / 1000.0
+    juni = calc.calc_delta_pt(player_id, grp_feature, rank_by_player)
+
+    chip_zeros = np.zeros(len(grp_feature))
+    blend_score = calc.calc_delta_blend(
+        player_id, grp_feature, rank_by_player, final_scores,
+        chip_deltas=chip_zeros, beta=1.0, chip_value=5.0, lambda_opp=0.0,
+    )
+    assert np.isclose(
+        blend_score[0],
+        compose_kyoku_reward(sotensu[0], juni[0], 0.0),
+        atol=1e-9,
+    ), 'score-only kyoku mismatch'
+
+    chip_one = np.array([0.0, 1.0])
+    blend_chip = calc.calc_delta_blend(
+        player_id, grp_feature, rank_by_player, final_scores,
+        chip_deltas=chip_one, beta=1.0, chip_value=5.0, lambda_opp=0.0,
+    )
+    assert np.isclose(
+        blend_chip[1],
+        compose_kyoku_reward(sotensu[1], juni[1], 1.0),
+        atol=1e-9,
+    ), 'mixed kyoku mismatch'
+
+    chip_only_arr = np.array([1.0, 0.0])
+    blend_chip_only = calc.calc_delta_blend(
+        player_id, grp_feature, rank_by_player, final_scores,
+        alpha=0.0, gamma_pt=0.0,
+        chip_deltas=chip_only_arr, beta=1.0, chip_value=5.0, lambda_opp=0.0,
+    )
+    assert np.isclose(blend_chip_only[0], 5.0, atol=1e-9), 'chip-only kyoku mismatch'
+    log('  PASS: calc_delta_blend ≡ compose (score / chip / mixed)', buf)
+
+
+def check_checkpoint_load(ckpt: str, buf: StringIO):
+    log('(6) legacy checkpoint load after chip head removal', buf)
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    dqn = DQN(version=version)
+    missing, unexpected = dqn.load_state_dict(state['current_dqn'], strict=False)
+    assert not missing, f'missing keys: {missing}'
+    assert set(unexpected) == {'chip_net.weight', 'chip_net.bias'}, unexpected
+    ac = ActorCritic(version=version)
+    load_ppo_from_mortal_checkpoint(ac, ckpt, map_location='cpu')
+    packed = pack_trajectory(TrajectoryBatch(
+        obs=torch.zeros(1, *obs_shape(version)),
+        action=torch.zeros(1, dtype=torch.int64),
+        logp_old=torch.zeros(1),
+        mask=torch.ones(1, ACTION_SPACE, dtype=torch.bool),
+        reward=torch.zeros(1),
+        done=torch.ones(1, dtype=torch.bool),
+    ))
+    roundtrip = unpack_trajectory(packed, map_location='cpu')
+    assert roundtrip.obs.shape[0] == 1
+    log('  PASS: strict=False ignores chip_net; ActorCritic loads main heads', buf)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--checkpoint', default=DEFAULT_CKPT)
+    parser.add_argument('--grp-state', default='/home/gamba/mahjong/runs/grp.pth')
+    args = parser.parse_args()
+
+    buf = StringIO()
+    log('PPO P1 sanity verification', buf)
+    log(f'checkpoint: {args.checkpoint}', buf)
+    log('', buf)
+
+    check_pi0_match(args.checkpoint, buf)
+    check_mask(buf)
+    check_gae(buf)
+    check_logp_old(args.checkpoint, buf)
+    check_reward_compose(buf, args.grp_state)
+    check_checkpoint_load(args.checkpoint, buf)
+
+    log('', buf)
+    log('ALL 6 CHECKS PASSED', buf)
+    out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
+    out_path.write_text(buf.getvalue(), encoding='utf-8')
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

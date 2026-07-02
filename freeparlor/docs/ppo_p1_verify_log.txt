@@ -1,0 +1,19 @@
+PPO P1 sanity verification
+checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
+
+(1) π₀ consistency
+  PASS: softmax(policy/τ) ≡ softmax(a_head/τ)
+(2) illegal action mask
+  PASS: illegal actions have π=0
+(3) GAE 3-step hand calc
+  adv=[5.252500057220459, 3.950000047683716, 1.0]
+  PASS: GAE matches manual 3-step
+(4) logp_old client vs trainer
+  PASS: client logp_old == trainer recompute
+(5) reward composition vs calc_delta_blend
+  PASS: compose helper unit cases
+  PASS: calc_delta_blend ≡ compose (score / chip / mixed)
+(6) legacy checkpoint load after chip head removal
+  PASS: strict=False ignores chip_net; ActorCritic loads main heads
+
+ALL 6 CHECKS PASSED
