@@ -50,6 +50,9 @@ def load_kyoku_hora_r_chip(file_path, player_id):
     return dict(per_kyoku)
 
 
+from chip_from_log import chip_delta_at_hora, load_kyoku_chip_deltas_from_log
+
+
 def assign_r_chip_to_trainee_final_moves(game_size, at_kyoku, kyoku_hora_r_chip):
     """Attribute each kyoku's summed hora chip_delta to the trainee's last move in that kyoku."""
     r_chip = np.zeros(game_size, dtype=np.float32)

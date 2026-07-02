@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'mortal'))
 
 from libriichi.consts import ACTION_SPACE, obs_shape
+from libriichi.dataset import GameplayLoader
+from chip_from_log import load_kyoku_chip_deltas_from_log
 from model import (
     ActorCritic,
     Brain,
@@ -32,6 +34,7 @@ from reward_calculator import RewardCalculator
 
 
 DEFAULT_CKPT = '/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth'
+DEFAULT_ONLINE_LOG = '/home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz'
 
 
 def log(msg: str, buf: StringIO):
@@ -121,7 +124,6 @@ def check_logp_old(ckpt: str, buf: StringIO):
 
     engine = PPOEngine(
         mortal, ac, version=version, device=device,
-        boltzmann_epsilon=0.0,
     )
     actions, _, _, _ = engine.react_batch(
         list(obs_np), list(masks_np), None,
@@ -202,6 +204,75 @@ def check_reward_compose(buf: StringIO, grp_state_file: str | None):
     log('  PASS: calc_delta_blend ≡ compose (score / chip / mixed)', buf)
 
 
+def check_sampling(ckpt: str, buf: StringIO, *, n_samples: int = 10000):
+    log('(7) pure π sampling', buf)
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    cfg = state['config']['resnet']
+    device = torch.device('cpu')
+
+    mortal = Brain(version=version, **cfg).eval()
+    mortal.load_state_dict(state['mortal'])
+    ac = ActorCritic(version=version, tau=1.0).eval()
+    load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+    c, w = obs_shape(version)
+    obs_np = np.random.randn(c, w).astype(np.float32)
+    mask_np = np.zeros(ACTION_SPACE, dtype=bool)
+    legal = np.random.choice(ACTION_SPACE, 12, replace=False)
+    mask_np[legal] = True
+
+    engine = PPOEngine(mortal, ac, version=version, device=device)
+    counts = np.zeros(ACTION_SPACE, dtype=np.int64)
+    illegal = 0
+    for _ in range(n_samples):
+        actions, _, _, is_greedy = engine.react_batch([obs_np], [mask_np], None)
+        engine.drain_pending()
+        action = actions[0]
+        if not mask_np[action]:
+            illegal += 1
+        counts[action] += 1
+        assert not is_greedy[0], 'training client must sample, not argmax'
+
+    obs_t = torch.as_tensor(obs_np).unsqueeze(0)
+    mask_t = torch.as_tensor(mask_np).unsqueeze(0)
+    with torch.inference_mode():
+        phi = mortal(obs_t)
+        logits, _ = ac(phi, mask_t)
+        expected = masked_softmax(logits, mask_t)[0].numpy()
+
+    empirical = counts / n_samples
+    tv = 0.5 * np.abs(empirical - expected).sum()
+    assert illegal == 0, f'illegal actions sampled: {illegal}'
+    assert tv < 0.02, f'TV distance {tv:.4f} >= 0.02'
+    log(f'  TV distance={tv:.5f}, illegal={illegal}', buf)
+    log('  PASS: samples match softmax(masked logits), no illegal actions', buf)
+
+
+def check_online_chips(buf: StringIO, log_path: str, version: int):
+    log('(8) online chip from log', buf)
+    path = Path(log_path)
+    assert path.exists(), f'log not found: {path}'
+
+    loader = GameplayLoader(version=version, player_names=None)
+    data = loader.load_gz_log_files([str(path)])
+    assert data[0], f'no games parsed from {path}'
+    game = data[0][0]
+    player_id = game.take_player_id()
+    grp_feature = game.take_grp().take_feature()
+    n_kyoku = len(grp_feature)
+
+    chip_deltas = load_kyoku_chip_deltas_from_log(path, player_id, n_kyoku)
+    assert np.any(chip_deltas != 0), f'all-zero chip_deltas from {path}'
+    nonzero_kyoku = int(np.count_nonzero(chip_deltas))
+    log(
+        f'  player_id={player_id} n_kyoku={n_kyoku} '
+        f'nonzero_kyoku={nonzero_kyoku} sum={chip_deltas.sum():.1f}',
+        buf,
+    )
+    log('  PASS: log-derived chip_delta has non-zero entries', buf)
+
+
 def check_checkpoint_load(ckpt: str, buf: StringIO):
     log('(6) legacy checkpoint load after chip head removal', buf)
     state = torch.load(ckpt, weights_only=True, map_location='cpu')
@@ -229,11 +300,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', default=DEFAULT_CKPT)
     parser.add_argument('--grp-state', default='/home/gamba/mahjong/runs/grp.pth')
+    parser.add_argument('--online-log', default=DEFAULT_ONLINE_LOG)
     args = parser.parse_args()
+
+    state = torch.load(args.checkpoint, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
 
     buf = StringIO()
     log('PPO P1 sanity verification', buf)
     log(f'checkpoint: {args.checkpoint}', buf)
+    log(f'online log: {args.online_log}', buf)
     log('', buf)
 
     check_pi0_match(args.checkpoint, buf)
@@ -242,9 +318,11 @@ def main():
     check_logp_old(args.checkpoint, buf)
     check_reward_compose(buf, args.grp_state)
     check_checkpoint_load(args.checkpoint, buf)
+    check_sampling(args.checkpoint, buf)
+    check_online_chips(buf, args.online_log, version)
 
     log('', buf)
-    log('ALL 6 CHECKS PASSED', buf)
+    log('ALL 8 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0

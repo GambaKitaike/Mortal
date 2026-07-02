@@ -31,8 +31,8 @@ def _load_heads(rsp, version, device):
 
 
 def _finalize_ppo_trajectories(engine, file_list, param_version):
-    from pathlib import Path
     from libriichi.dataset import GameplayLoader
+    from chip_from_log import load_kyoku_chip_deltas_from_log
     from model import GRP
     from reward_calculator import RewardCalculator
     from ppo_transport import numpy_trajectory_to_batch, pack_trajectory
@@ -51,7 +51,6 @@ def _finalize_ppo_trajectories(engine, file_list, param_version):
     )
     beta = config['env'].get('beta', 1.0)
     chip_value = config['env'].get('chip_value', 5.0)
-    chip_dir = config['env'].get('chip_dir', '/home/gamba/mahjong/data/tenhou/chips')
 
     loader = GameplayLoader(version=config['control']['version'], player_names=['trainee'])
     trajectories = {}
@@ -73,12 +72,13 @@ def _finalize_ppo_trajectories(engine, file_list, param_version):
             rank_by_player = grp_obj.take_rank_by_player()
             final_scores = grp_obj.take_final_scores()
 
-            chip_path = Path(chip_dir) / f'{Path(file_path).name}.npz'
-            if chip_path.exists():
-                chips = np.load(chip_path)['chips']
-                chip_deltas = chips[:len(grp_feature), player_id].astype(np.float64)
-            else:
-                chip_deltas = np.zeros(len(grp_feature), dtype=np.float64)
+            try:
+                chip_deltas = load_kyoku_chip_deltas_from_log(
+                    file_path, player_id, len(grp_feature),
+                )
+            except RuntimeError as exc:
+                logging.error('online chip resolution failed for %s: %s', file_path, exc)
+                raise
 
             kyoku_rewards = reward_calc.calc_delta_blend(
                 player_id, grp_feature, rank_by_player, final_scores,
@@ -145,14 +145,11 @@ def main():
 
         if use_ppo:
             from ppo_engine import PPOEngine
-            profile = config['train_play']['default']
             engine = PPOEngine(
                 mortal,
                 head,
                 is_oracle=False,
                 version=version,
-                boltzmann_epsilon=profile['boltzmann_epsilon'],
-                top_p=profile['top_p'],
                 device=device,
                 enable_amp=True,
                 name='trainee',

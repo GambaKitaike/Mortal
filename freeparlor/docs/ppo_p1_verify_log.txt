@@ -1,5 +1,6 @@
 PPO P1 sanity verification
 checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
+online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 
 (1) π₀ consistency
   PASS: softmax(policy/τ) ≡ softmax(a_head/τ)
@@ -15,5 +16,11 @@ checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
   PASS: calc_delta_blend ≡ compose (score / chip / mixed)
 (6) legacy checkpoint load after chip head removal
   PASS: strict=False ignores chip_net; ActorCritic loads main heads
+(7) pure π sampling
+  TV distance=0.00437, illegal=0
+  PASS: samples match softmax(masked logits), no illegal actions
+(8) online chip from log
+  player_id=0 n_kyoku=8 nonzero_kyoku=3 sum=-5.0
+  PASS: log-derived chip_delta has non-zero entries
 
-ALL 6 CHECKS PASSED
+ALL 8 CHECKS PASSED

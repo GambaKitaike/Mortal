@@ -36,9 +36,6 @@ trajectory_glob = ''
 [train_play.default]
 games = 800
 log_dir = '<HOME>/mahjong/runs/ppo/p1/train_play'
-boltzmann_epsilon = 0.005
-boltzmann_temp = 0.05
-top_p = 1.0
 repeats = 1
 
 [test_play]
@@ -63,7 +60,6 @@ alpha = 1.0
 gamma_pt = 1.0
 beta = 1.0
 chip_value = 5.0
-chip_dir = '<HOME>/mahjong/data/tenhou/chips'
 lambda_opp = 0.0
 noten_factor = 0.0
 
