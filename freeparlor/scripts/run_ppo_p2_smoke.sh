@@ -19,7 +19,7 @@ if [[ -z "${MORTAL_FOREGROUND:-}" ]]; then
   fi
   tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true
   tmux new-session -d -s "$TMUX_SESSION" \
-    "MORTAL_FOREGROUND=1 NUM_CLIENTS=$NUM_CLIENTS TMUX_SESSION=$TMUX_SESSION bash $0; echo exit=\$?; exec bash"
+    "MORTAL_FOREGROUND=1 NUM_CLIENTS=$NUM_CLIENTS TMUX_SESSION=$TMUX_SESSION RUN_DIR=$RUN_DIR PPO_CONFIG=$PPO_CONFIG CONFIG_TAG=$CONFIG_TAG bash $0; echo exit=\$?; exec bash"
   echo "Started in tmux session: $TMUX_SESSION"
   echo "  attach: tmux attach -t $TMUX_SESSION"
   echo "  log:    tail -f $LOG_DIR/trainer.log"

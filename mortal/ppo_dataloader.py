@@ -12,6 +12,17 @@ from ppo import action_log_probs
 from ppo_transport import TrajectoryBatch, numpy_trajectory_to_batch, unpack_trajectory
 
 
+def assign_kyoku_terms(at_kyoku, kyoku_values, game_size):
+    """Assign per-kyoku scalar on the terminal step only (same layout as reward)."""
+    terms = np.zeros(game_size, dtype=np.float32)
+    last_by_kyoku = {}
+    for i in range(game_size):
+        last_by_kyoku[at_kyoku[i]] = i
+    for kyoku, idx in last_by_kyoku.items():
+        terms[idx] = float(kyoku_values[kyoku])
+    return terms
+
+
 def assign_rewards_and_dones(at_kyoku, kyoku_rewards, game_size):
     """Assign kyoku-end reward on the terminal step only (§2.2: episode = kyoku)."""
     rewards = np.zeros(game_size, dtype=np.float32)
@@ -31,15 +42,20 @@ def load_trajectory_file(path: Path | str, *, map_location='cpu') -> TrajectoryB
 
 
 def collate_trajectory_batches(batches: list[TrajectoryBatch]) -> TrajectoryBatch:
-    return TrajectoryBatch(
-        obs=torch.cat([b.obs for b in batches], dim=0),
-        action=torch.cat([b.action for b in batches], dim=0),
-        logp_old=torch.cat([b.logp_old for b in batches], dim=0),
-        mask=torch.cat([b.mask for b in batches], dim=0),
-        reward=torch.cat([b.reward for b in batches], dim=0),
-        done=torch.cat([b.done for b in batches], dim=0),
-        param_version=batches[-1].param_version,
-    )
+    kwargs = {
+        'obs': torch.cat([b.obs for b in batches], dim=0),
+        'action': torch.cat([b.action for b in batches], dim=0),
+        'logp_old': torch.cat([b.logp_old for b in batches], dim=0),
+        'mask': torch.cat([b.mask for b in batches], dim=0),
+        'reward': torch.cat([b.reward for b in batches], dim=0),
+        'done': torch.cat([b.done for b in batches], dim=0),
+        'param_version': batches[-1].param_version,
+    }
+    if batches[0].reward_sotensu is not None:
+        kwargs['reward_sotensu'] = torch.cat([b.reward_sotensu for b in batches], dim=0)
+        kwargs['reward_grp'] = torch.cat([b.reward_grp for b in batches], dim=0)
+        kwargs['reward_chip'] = torch.cat([b.reward_chip for b in batches], dim=0)
+    return TrajectoryBatch(**kwargs)
 
 
 def recompute_logp_old(

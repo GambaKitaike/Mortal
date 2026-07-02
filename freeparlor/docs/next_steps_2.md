@@ -128,6 +128,9 @@ reward = α·(素点/1000) + β·(チップ枚数 × 5.0) + γ·順位点 + opp(
 ---
 
 ## 7. 環境メモ
+- **run dir 再利用禁止**（証拠上書き防止）。各実験は新規 run dir を使い、
+  名前に日時 suffix を付ける（例 `smoke_p2c_20260703_0541`）。既存 dir への
+  上書き・再実行は禁止。
 - 作業箱 `wsl -d mahjong` のみ。ユーザー小文字 `gamba`(`/home/gamba`)。
 - リポジトリ `/home/gamba/mahjong/Mortal`。`conda activate mortal`。
 - **WSL2 メモリ**: `.wslconfig` `memory=24GB` / `swap=16GB`（32GB 禁止・ホスト総量32GB）。

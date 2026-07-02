@@ -11,6 +11,7 @@ import torch
 from torch import Tensor
 
 TRAJECTORY_FIELDS = ('obs', 'action', 'logp_old', 'mask', 'reward', 'done')
+REWARD_COMPONENT_FIELDS = ('reward_sotensu', 'reward_grp', 'reward_chip')
 
 
 @dataclass
@@ -22,32 +23,48 @@ class TrajectoryBatch:
     reward: Tensor
     done: Tensor
     param_version: int = -1
+    reward_sotensu: Tensor | None = None
+    reward_grp: Tensor | None = None
+    reward_chip: Tensor | None = None
 
     def __post_init__(self):
         n = self.obs.shape[0]
         for name in TRAJECTORY_FIELDS[1:]:
             t = getattr(self, name)
             assert t.shape[0] == n, f'{name} batch dim mismatch'
+        for name in REWARD_COMPONENT_FIELDS:
+            t = getattr(self, name)
+            if t is not None:
+                assert t.shape[0] == n, f'{name} batch dim mismatch'
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            'format': 'ppo_trajectory_v1',
+        payload = {
+            'format': 'ppo_trajectory_v2',
             'param_version': self.param_version,
             **{k: getattr(self, k) for k in TRAJECTORY_FIELDS},
         }
+        for name in REWARD_COMPONENT_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                payload[name] = value
+        return payload
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> TrajectoryBatch:
-        assert d.get('format') == 'ppo_trajectory_v1'
-        return cls(
-            obs=d['obs'],
-            action=d['action'],
-            logp_old=d['logp_old'],
-            mask=d['mask'],
-            reward=d['reward'],
-            done=d['done'],
-            param_version=d.get('param_version', -1),
-        )
+        fmt = d.get('format')
+        assert fmt in ('ppo_trajectory_v1', 'ppo_trajectory_v2')
+        kwargs = {
+            'obs': d['obs'],
+            'action': d['action'],
+            'logp_old': d['logp_old'],
+            'mask': d['mask'],
+            'reward': d['reward'],
+            'done': d['done'],
+            'param_version': d.get('param_version', -1),
+        }
+        for name in REWARD_COMPONENT_FIELDS:
+            kwargs[name] = d.get(name)
+        return cls(**kwargs)
 
 
 def pack_trajectory(batch: TrajectoryBatch) -> bytes:
@@ -63,12 +80,23 @@ def unpack_trajectory(data: bytes, *, map_location='cpu') -> TrajectoryBatch:
 
 
 def numpy_trajectory_to_batch(steps: list[dict[str, Any]], *, param_version: int = -1) -> TrajectoryBatch:
-    return TrajectoryBatch(
-        obs=torch.as_tensor(np.stack([s['obs'] for s in steps]), dtype=torch.float32),
-        action=torch.as_tensor([s['action'] for s in steps], dtype=torch.int64),
-        logp_old=torch.as_tensor([s['logp_old'] for s in steps], dtype=torch.float32),
-        mask=torch.as_tensor(np.stack([s['mask'] for s in steps]), dtype=torch.bool),
-        reward=torch.as_tensor([s['reward'] for s in steps], dtype=torch.float32),
-        done=torch.as_tensor([s['done'] for s in steps], dtype=torch.bool),
-        param_version=param_version,
-    )
+    kwargs = {
+        'obs': torch.as_tensor(np.stack([s['obs'] for s in steps]), dtype=torch.float32),
+        'action': torch.as_tensor([s['action'] for s in steps], dtype=torch.int64),
+        'logp_old': torch.as_tensor([s['logp_old'] for s in steps], dtype=torch.float32),
+        'mask': torch.as_tensor(np.stack([s['mask'] for s in steps]), dtype=torch.bool),
+        'reward': torch.as_tensor([s['reward'] for s in steps], dtype=torch.float32),
+        'done': torch.as_tensor([s['done'] for s in steps], dtype=torch.bool),
+        'param_version': param_version,
+    }
+    if steps and 'reward_sotensu' in steps[0]:
+        kwargs['reward_sotensu'] = torch.as_tensor(
+            [s['reward_sotensu'] for s in steps], dtype=torch.float32,
+        )
+        kwargs['reward_grp'] = torch.as_tensor(
+            [s['reward_grp'] for s in steps], dtype=torch.float32,
+        )
+        kwargs['reward_chip'] = torch.as_tensor(
+            [s['reward_chip'] for s in steps], dtype=torch.float32,
+        )
+    return TrajectoryBatch(**kwargs)

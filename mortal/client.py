@@ -10,7 +10,6 @@ import gc
 from os import path
 from model import Brain, DQN, ActorCritic, load_actor_critic_from_dqn_checkpoint
 from player import TrainPlayer
-from ppo_dataloader import assign_rewards_and_dones
 from common import send_msg, recv_msg
 from config import config
 
@@ -45,6 +44,7 @@ def _finalize_ppo_trajectories(engine, file_list, param_version, *, client_label
     from chip_from_log import load_kyoku_chip_deltas_from_log
     from model import GRP
     from reward_calculator import RewardCalculator
+    from ppo_dataloader import assign_rewards_and_dones, assign_kyoku_terms
     from ppo_transport import numpy_trajectory_to_batch, pack_trajectory
 
     pending = engine.drain_pending()
@@ -112,11 +112,22 @@ def _finalize_ppo_trajectories(engine, file_list, param_version, *, client_label
                 chip_deltas=chip_deltas, beta=beta, chip_value=chip_value,
                 lambda_opp=0.0,
             )
+            sotensu = reward_calc.calc_delta_points(player_id, grp_feature, final_scores) / 1000.0
+            juni = reward_calc.calc_delta_pt(player_id, grp_feature, rank_by_player)
+            sotensu_terms = reward_calc.alpha * sotensu
+            grp_terms = reward_calc.gamma_pt * juni
+            chip_terms = beta * chip_deltas * chip_value
 
             rewards, dones = assign_rewards_and_dones(at_kyoku, kyoku_rewards, game_size)
+            reward_sotensu = assign_kyoku_terms(at_kyoku, sotensu_terms, game_size)
+            reward_grp = assign_kyoku_terms(at_kyoku, grp_terms, game_size)
+            reward_chip = assign_kyoku_terms(at_kyoku, chip_terms, game_size)
             for i in range(game_size):
                 steps[i]['reward'] = float(rewards[i])
                 steps[i]['done'] = bool(dones[i])
+                steps[i]['reward_sotensu'] = float(reward_sotensu[i])
+                steps[i]['reward_grp'] = float(reward_grp[i])
+                steps[i]['reward_chip'] = float(reward_chip[i])
 
             batch = numpy_trajectory_to_batch(steps, param_version=param_version)
             traj_name = path.basename(file_path).replace('.json.gz', '.traj').replace('.mjson', '.traj')

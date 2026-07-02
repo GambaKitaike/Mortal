@@ -19,7 +19,7 @@ def train_ppo():
     from config import config
     from model import ActorCritic, Brain, load_ppo_from_mortal_checkpoint
     from player import TestPlayer
-    from ppo import action_log_probs, compute_gae, masked_softmax, ppo_loss
+    from ppo import action_log_probs, compute_gae, masked_softmax, normalize_advantages, ppo_loss
     from ppo_dataloader import collate_trajectory_batches, load_trajectory_file
     from ppo_transport import TrajectoryBatch
 
@@ -161,6 +161,104 @@ def train_ppo():
         with diag_log_path.open('a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
+    CALL_ACTION_MIN = 38
+    CALL_ACTION_MAX = 42
+    RIICHI_ACTION = 37
+
+    def _tensor_stats(values: torch.Tensor) -> dict | None:
+        n = int(values.numel())
+        if n == 0:
+            return None
+        if n == 1:
+            return {'mean': float(values.item()), 'std': 0.0, 'n': 1}
+        return {
+            'mean': float(values.mean().item()),
+            'std': float(values.std(unbiased=False).item()),
+            'n': n,
+        }
+
+    def _log_advantage_decomp(
+        advantages_raw: torch.Tensor,
+        actions: torch.Tensor,
+        masks: torch.Tensor,
+    ):
+        adv_norm = normalize_advantages(advantages_raw)
+        call_possible = masks[:, CALL_ACTION_MIN:CALL_ACTION_MAX + 1].any(dim=1)
+        call_taken = (actions >= CALL_ACTION_MIN) & (actions <= CALL_ACTION_MAX)
+        riichi_possible = masks[:, RIICHI_ACTION]
+        riichi_taken = actions == RIICHI_ACTION
+
+        categories = {
+            'call_taken': call_possible & call_taken,
+            'call_declined': call_possible & ~call_taken,
+            'riichi_taken': riichi_possible & riichi_taken,
+            'riichi_declined': riichi_possible & ~riichi_taken,
+        }
+        payload = {'event': 'advantage_decomp', 'raw': {}, 'norm': {}}
+        for name, sel in categories.items():
+            payload['raw'][name] = _tensor_stats(advantages_raw[sel])
+            payload['norm'][name] = _tensor_stats(adv_norm[sel])
+        _append_diag(payload)
+
+    def _log_kyoku_reward_decomp(
+        actions: torch.Tensor,
+        masks: torch.Tensor,
+        reward_sotensu: torch.Tensor,
+        reward_grp: torch.Tensor,
+        reward_chip: torch.Tensor,
+        episode_indices: list[int],
+    ):
+        call_taken = (actions >= CALL_ACTION_MIN) & (actions <= CALL_ACTION_MAX)
+        riichi_taken = actions == RIICHI_ACTION
+
+        buckets = {
+            'riichi_yes': {'n': 0, 'sotensu_sum': 0.0, 'grp_sum': 0.0, 'chip_sum': 0.0},
+            'riichi_no': {'n': 0, 'sotensu_sum': 0.0, 'grp_sum': 0.0, 'chip_sum': 0.0},
+            'call_yes': {'n': 0, 'sotensu_sum': 0.0, 'grp_sum': 0.0, 'chip_sum': 0.0},
+            'call_no': {'n': 0, 'sotensu_sum': 0.0, 'grp_sum': 0.0, 'chip_sum': 0.0},
+        }
+
+        start = 0
+        for end in episode_indices:
+            sl = slice(start, end + 1)
+            kyoku_riichi = bool(riichi_taken[sl].any().item())
+            kyoku_call = bool(call_taken[sl].any().item())
+            s = float(reward_sotensu[end].item())
+            g = float(reward_grp[end].item())
+            c = float(reward_chip[end].item())
+
+            r_key = 'riichi_yes' if kyoku_riichi else 'riichi_no'
+            c_key = 'call_yes' if kyoku_call else 'call_no'
+            for key in (r_key, c_key):
+                buckets[key]['n'] += 1
+                buckets[key]['sotensu_sum'] += s
+                buckets[key]['grp_sum'] += g
+                buckets[key]['chip_sum'] += c
+            start = end + 1
+
+        def _finalize(bucket: dict) -> dict | None:
+            n = bucket['n']
+            if n == 0:
+                return None
+            return {
+                'n': n,
+                'sotensu_mean': bucket['sotensu_sum'] / n,
+                'grp_mean': bucket['grp_sum'] / n,
+                'chip_mean': bucket['chip_sum'] / n,
+            }
+
+        _append_diag({
+            'event': 'kyoku_reward_decomp',
+            'by_riichi': {
+                'yes': _finalize(buckets['riichi_yes']),
+                'no': _finalize(buckets['riichi_no']),
+            },
+            'by_call': {
+                'yes': _finalize(buckets['call_yes']),
+                'no': _finalize(buckets['call_no']),
+            },
+        })
+
     def train_on_trajectories(traj: TrajectoryBatch):
         nonlocal steps
         nonlocal stat_count
@@ -191,8 +289,8 @@ def train_ppo():
             rewards_np = rewards.cpu()
             dones_np = dones.cpu()
             probs_all = masked_softmax(logits_all, masks)
-            call_possible = masks[:, 38:42].any(dim=1)
-            riichi_possible = masks[:, 37]
+            call_possible = masks[:, CALL_ACTION_MIN:CALL_ACTION_MAX + 1].any(dim=1)
+            riichi_possible = masks[:, RIICHI_ACTION]
             pi_call = None
             pi_riichi = None
             if call_possible.any():
@@ -230,6 +328,17 @@ def train_ppo():
 
         advantages = torch.cat(adv_parts).to(device)
         returns = torch.cat(ret_parts).to(device)
+
+        _log_advantage_decomp(advantages, actions, masks)
+        if traj.reward_sotensu is not None:
+            _log_kyoku_reward_decomp(
+                actions,
+                masks,
+                traj.reward_sotensu,
+                traj.reward_grp,
+                traj.reward_chip,
+                episode_indices,
+            )
 
         n = obs.shape[0]
         mb_size = minibatch_size if minibatch_size and minibatch_size < n else n
