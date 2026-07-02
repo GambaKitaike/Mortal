@@ -19,7 +19,7 @@ def train_ppo():
     from config import config
     from model import ActorCritic, Brain, load_ppo_from_mortal_checkpoint
     from player import TestPlayer
-    from ppo import action_log_probs, compute_gae, ppo_loss
+    from ppo import action_log_probs, compute_gae, masked_softmax, ppo_loss
     from ppo_dataloader import collate_trajectory_batches, load_trajectory_file
     from ppo_transport import TrajectoryBatch
 
@@ -186,10 +186,26 @@ def train_ppo():
 
         with torch.inference_mode():
             phi_all = mortal(obs)
-            _, values_all = actor_critic(phi_all, masks)
+            logits_all, values_all = actor_critic(phi_all, masks)
             values_np = values_all.cpu()
             rewards_np = rewards.cpu()
             dones_np = dones.cpu()
+            probs_all = masked_softmax(logits_all, masks)
+            call_possible = masks[:, 38:42].any(dim=1)
+            riichi_possible = masks[:, 37]
+            pi_call = None
+            pi_riichi = None
+            if call_possible.any():
+                pi_call = probs_all[call_possible][:, 38:42].sum(dim=1).mean().item()
+            if riichi_possible.any():
+                pi_riichi = probs_all[riichi_possible, 37].mean().item()
+            _append_diag({
+                'event': 'action_mass',
+                'pi_call_given_possible': pi_call,
+                'pi_riichi_given_possible': pi_riichi,
+                'n_call_possible': int(call_possible.sum().item()),
+                'n_riichi_possible': int(riichi_possible.sum().item()),
+            })
 
         episode_indices = torch.where(dones)[0].tolist()
         if not episode_indices or episode_indices[-1] != len(dones) - 1:

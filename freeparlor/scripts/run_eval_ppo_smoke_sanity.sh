@@ -3,8 +3,14 @@
 # Launches in tmux unless MORTAL_FOREGROUND=1.
 set -euo pipefail
 
-RUN_DIR="/home/gamba/mahjong/runs/ppo/smoke_p2"
-CFG="$RUN_DIR/config.toml"
+_DEFAULT_RUN_DIR="/home/gamba/mahjong/runs/ppo/smoke_p2"
+if [[ -n "${MORTAL_CFG:-}" ]]; then
+  CFG="$MORTAL_CFG"
+  RUN_DIR="$(dirname "$CFG")"
+else
+  RUN_DIR="${RUN_DIR:-$_DEFAULT_RUN_DIR}"
+  CFG="$RUN_DIR/config.toml"
+fi
 LOG_DIR="$RUN_DIR/logs"
 EVAL_LABEL="${EVAL_LABEL:-default}"
 EVAL_LOG="$LOG_DIR/eval_sanity_${EVAL_LABEL}.log"

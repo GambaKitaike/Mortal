@@ -43,7 +43,8 @@ class MortalEngine:
         self.top_p = top_p
         self.beta_sel = beta_sel
 
-    def react_batch(self, obs, masks, invisible_obs):
+    def react_batch(self, obs, masks, invisible_obs, step_meta=None):
+        del step_meta  # DQN path ignores PPO trajectory keys; keeps MortalBatchAgent ABI
         try:
             with (
                 torch.autocast(self.device.type, enabled=self.enable_amp),

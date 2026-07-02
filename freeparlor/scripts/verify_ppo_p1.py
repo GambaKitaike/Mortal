@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 
@@ -273,6 +275,66 @@ def check_online_chips(buf: StringIO, log_path: str, version: int):
     log('  PASS: log-derived chip_delta has non-zero entries', buf)
 
 
+def check_dqn_one_vs_three(ckpt: str, buf: StringIO):
+    log('(9) DQN MortalEngine OneVsThree regression (1 hanchan)', buf)
+    from engine import MortalEngine
+    from libriichi.arena import OneVsThree
+
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    cfg = state['config']['resnet']
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    mortal = Brain(version=version, **cfg).eval()
+    mortal.load_state_dict(state['mortal'])
+    dqn = DQN(version=version).eval()
+    dqn.load_state_dict(state['current_dqn'], strict=False)
+
+    baseline_state = torch.load('/home/gamba/mahjong/runs/grp_baseline.pth', weights_only=True, map_location='cpu')
+    bcfg = baseline_state['config']
+    bversion = bcfg['control'].get('version', 1)
+    b_mortal = Brain(
+        version=bversion,
+        conv_channels=bcfg['resnet']['conv_channels'],
+        num_blocks=bcfg['resnet']['num_blocks'],
+    ).eval()
+    b_dqn = DQN(version=bversion).eval()
+    b_mortal.load_state_dict(baseline_state['mortal'])
+    b_dqn.load_state_dict(baseline_state['current_dqn'], strict=False)
+
+    engine = MortalEngine(
+        mortal, dqn,
+        is_oracle=False,
+        version=version,
+        device=device,
+        enable_amp=True,
+        enable_rule_based_agari_guard=True,
+        name='mortal',
+    )
+    baseline = MortalEngine(
+        b_mortal, b_dqn,
+        is_oracle=False,
+        version=bversion,
+        device=device,
+        enable_amp=True,
+        enable_rule_based_agari_guard=True,
+        name='baseline',
+    )
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_dqn_1v3_') as tmp:
+        log_dir = Path(tmp)
+        env = OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
+        env.py_vs_py(
+            challenger=engine,
+            champion=baseline,
+            seed_start=(99999, 0x2000),
+            seed_count=1,
+        )
+        n_logs = sum(1 for _ in log_dir.glob('*.json.gz'))
+        assert n_logs > 0, f'no json.gz produced in {log_dir}'
+    log(f'  PASS: grp_baseline path, 1 hanchan, json.gz={n_logs}', buf)
+
+
 def check_checkpoint_load(ckpt: str, buf: StringIO):
     log('(6) legacy checkpoint load after chip head removal', buf)
     state = torch.load(ckpt, weights_only=True, map_location='cpu')
@@ -307,7 +369,8 @@ def main():
     version = state['config']['control']['version']
 
     buf = StringIO()
-    log('PPO P1 sanity verification', buf)
+    now = datetime.now(timezone.utc).astimezone()
+    log(f'PPO P1 sanity verification (re-run {now.isoformat(timespec="seconds")})', buf)
     log(f'checkpoint: {args.checkpoint}', buf)
     log(f'online log: {args.online_log}', buf)
     log('', buf)
@@ -320,9 +383,10 @@ def main():
     check_checkpoint_load(args.checkpoint, buf)
     check_sampling(args.checkpoint, buf)
     check_online_chips(buf, args.online_log, version)
+    check_dqn_one_vs_three(args.checkpoint, buf)
 
     log('', buf)
-    log('ALL 8 CHECKS PASSED', buf)
+    log('ALL 9 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0

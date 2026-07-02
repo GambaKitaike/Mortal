@@ -3,11 +3,13 @@
 # Launches in tmux unless MORTAL_FOREGROUND=1.
 set -euo pipefail
 
-RUN_DIR="/home/gamba/mahjong/runs/ppo/smoke_p2"
+RUN_DIR="${RUN_DIR:-/home/gamba/mahjong/runs/ppo/smoke_p2}"
 CFG="$RUN_DIR/config.toml"
 LOG_DIR="$RUN_DIR/logs"
 NUM_CLIENTS="${NUM_CLIENTS:-3}"
 REPO="/home/gamba/mahjong/Mortal"
+PPO_CONFIG="${PPO_CONFIG:-$REPO/freeparlor/configs/ppo_p2_smoke.toml}"
+CONFIG_TAG="${CONFIG_TAG:-smoke_p2}"
 TMUX_SESSION="${TMUX_SESSION:-ppo_p2_smoke}"
 
 if [[ -z "${MORTAL_FOREGROUND:-}" ]]; then
@@ -38,7 +40,7 @@ cleanup() {
   [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null || true
   pkill -f "python /home/gamba/mahjong/runs/run_train_ppo.py" 2>/dev/null || true
   sleep 2
-  pkill -f "smoke_p2/config.toml" 2>/dev/null || true
+  pkill -f "${CONFIG_TAG}/config.toml" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -46,7 +48,7 @@ echo "=== Stopping stale processes ==="
 pkill -f "run_train_ppo.py" 2>/dev/null || true
 pkill -f "run_client.py" 2>/dev/null || true
 pkill -f "run_server.py" 2>/dev/null || true
-pkill -f "smoke_p2/config.toml" 2>/dev/null || true
+pkill -f "${CONFIG_TAG}/config.toml" 2>/dev/null || true
 pkill -f "eval_ppo_smoke_sanity.py" 2>/dev/null || true
 fuser -k 5000/tcp 2>/dev/null || true
 sleep 3
@@ -64,7 +66,7 @@ echo "port 5000 clear, GPU idle"
 
 echo "=== Setup run dir ==="
 mkdir -p "$RUN_DIR"/{tb,test_play,buffer,drain}
-cp "$REPO/freeparlor/configs/ppo_p2_smoke.toml" "$CFG"
+cp "$PPO_CONFIG" "$CFG"
 rm -rf "$RUN_DIR/buffer" "$RUN_DIR/drain"
 mkdir -p "$RUN_DIR/buffer" "$RUN_DIR/drain"
 
