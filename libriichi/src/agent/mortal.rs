@@ -346,6 +346,7 @@ impl BatchAgent for MortalBatchAgent {
         let cans = state.last_cans();
 
         let orig_action = self.actions[action_idx];
+        let masks = self.masks_recv[action_idx];
         let action =
             if self.enable_rule_based_agari_guard && orig_action == 43 && !state.rule_based_agari()
             {
@@ -357,9 +358,10 @@ impl BatchAgent for MortalBatchAgent {
                 q_values
                     .iter()
                     .enumerate()
+                    .filter(|&(i, _)| masks[i])
                     .max_by(|(_, l), (_, r)| l.total_cmp(r))
-                    .unwrap()
-                    .0
+                    .map(|(i, _)| i)
+                    .unwrap_or(orig_action)
             } else {
                 orig_action
             };

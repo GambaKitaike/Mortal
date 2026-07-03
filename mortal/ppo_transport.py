@@ -26,6 +26,8 @@ class TrajectoryBatch:
     reward_sotensu: Tensor | None = None
     reward_grp: Tensor | None = None
     reward_chip: Tensor | None = None
+    grp_pred_rank: Tensor | None = None
+    grp_actual_rank: Tensor | None = None
 
     def __post_init__(self):
         n = self.obs.shape[0]
@@ -33,6 +35,10 @@ class TrajectoryBatch:
             t = getattr(self, name)
             assert t.shape[0] == n, f'{name} batch dim mismatch'
         for name in REWARD_COMPONENT_FIELDS:
+            t = getattr(self, name)
+            if t is not None:
+                assert t.shape[0] == n, f'{name} batch dim mismatch'
+        for name in ('grp_pred_rank', 'grp_actual_rank'):
             t = getattr(self, name)
             if t is not None:
                 assert t.shape[0] == n, f'{name} batch dim mismatch'
@@ -44,6 +50,10 @@ class TrajectoryBatch:
             **{k: getattr(self, k) for k in TRAJECTORY_FIELDS},
         }
         for name in REWARD_COMPONENT_FIELDS:
+            value = getattr(self, name)
+            if value is not None:
+                payload[name] = value
+        for name in ('grp_pred_rank', 'grp_actual_rank'):
             value = getattr(self, name)
             if value is not None:
                 payload[name] = value
@@ -63,6 +73,8 @@ class TrajectoryBatch:
             'param_version': d.get('param_version', -1),
         }
         for name in REWARD_COMPONENT_FIELDS:
+            kwargs[name] = d.get(name)
+        for name in ('grp_pred_rank', 'grp_actual_rank'):
             kwargs[name] = d.get(name)
         return cls(**kwargs)
 
@@ -98,5 +110,12 @@ def numpy_trajectory_to_batch(steps: list[dict[str, Any]], *, param_version: int
         )
         kwargs['reward_chip'] = torch.as_tensor(
             [s['reward_chip'] for s in steps], dtype=torch.float32,
+        )
+    if steps and 'grp_pred_rank' in steps[0]:
+        kwargs['grp_pred_rank'] = torch.as_tensor(
+            [s['grp_pred_rank'] for s in steps], dtype=torch.float32,
+        )
+        kwargs['grp_actual_rank'] = torch.as_tensor(
+            [s['grp_actual_rank'] for s in steps], dtype=torch.float32,
         )
     return TrajectoryBatch(**kwargs)

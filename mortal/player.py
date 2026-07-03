@@ -99,6 +99,47 @@ class TestPlayer:
         torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
         return stat
 
+    def _make_ppo_eval_engine(self, mortal, actor_critic, device, *, name='mortal'):
+        from ppo_engine import PPOEngine
+        return PPOEngine(
+            mortal,
+            actor_critic,
+            is_oracle=False,
+            version=self.chal_version,
+            device=device,
+            enable_amp=False,
+            enable_quick_eval=False,
+            enable_rule_based_agari_guard=True,
+            name=name,
+            eval_mode=True,
+            record_trajectory=False,
+        )
+
+    def _clone_ppo_eval_engine(self, mortal, actor_critic, device, *, name='mortal'):
+        from model import ActorCritic, Brain
+        from ppo_engine import PPOEngine
+
+        clone_m = Brain(version=self.chal_version, **config['resnet']).to(device).eval()
+        clone_ac = ActorCritic(
+            version=self.chal_version,
+            tau=config['ppo']['tau_init'],
+        ).to(device).eval()
+        clone_m.load_state_dict(mortal.state_dict())
+        clone_ac.load_state_dict(actor_critic.state_dict())
+        return PPOEngine(
+            clone_m,
+            clone_ac,
+            is_oracle=False,
+            version=self.chal_version,
+            device=device,
+            enable_amp=False,
+            enable_quick_eval=False,
+            enable_rule_based_agari_guard=True,
+            name=name,
+            eval_mode=True,
+            record_trajectory=False,
+        )
+
     def test_play_ppo(
         self,
         seed_count,
@@ -109,20 +150,8 @@ class TestPlayer:
         seed_start=(10000, 0x2000),
         clear_log_dir=True,
     ):
-        from ppo_engine import PPOEngine
-
         torch.backends.cudnn.benchmark = False
-        engine_chal = PPOEngine(
-            mortal,
-            actor_critic,
-            is_oracle=False,
-            version=self.chal_version,
-            device=device,
-            enable_amp=True,
-            enable_rule_based_agari_guard=True,
-            name='mortal',
-            eval_mode=True,
-        )
+        engine_chal = self._make_ppo_eval_engine(mortal, actor_critic, device, name='mortal')
 
         if clear_log_dir:
             if path.isdir(self.log_dir):
@@ -134,7 +163,11 @@ class TestPlayer:
             disable_progress_bar=False,
             log_dir=self.log_dir,
         )
-        champion = engine_chal if self.self_play else self.baseline_engine
+        if self.self_play:
+            # challenger/champion は別インスタンス必須（arena 並列が同一 engine を叩く）
+            champion = self._clone_ppo_eval_engine(mortal, actor_critic, device, name='mortal_clone')
+        else:
+            champion = self.baseline_engine
         env.py_vs_py(
             challenger=engine_chal,
             champion=champion,
@@ -192,6 +225,45 @@ class TrainPlayer:
         self.repeats = cfg['repeats']
         self.repeat_counter = 0
 
+        pool_cfg = config.get('opponent_pool', {})
+        self.opponent_pool_enabled = bool(pool_cfg.get('enabled', False))
+        self._opp_pool_cfg = pool_cfg
+
+    def _make_opponent_engine(self, device):
+        if not self.opponent_pool_enabled:
+            return self.baseline_engine
+        from model import Brain, ActorCritic
+        from opponent_pool import OpponentPool
+        from ppo_pool_engine import PPOOpponentPoolEngine
+
+        run_dir = path.dirname(path.dirname(self.log_dir))
+        ckpt_dir = path.join(run_dir, 'checkpoints')
+        init0 = path.join(ckpt_dir, 'step_000000.pth')
+        fallback = init0 if path.isfile(init0) else config['ppo'].get('init_checkpoint')
+        pool = OpponentPool(
+            ckpt_dir,
+            past_k=int(self._opp_pool_cfg.get('past_k', 5)),
+            latest_prob=float(self._opp_pool_cfg.get('latest_prob', 0.5)),
+            fallback_checkpoint=fallback,
+        )
+        version = self.chal_version
+        conv_channels = config['resnet']['conv_channels']
+        num_blocks = config['resnet']['num_blocks']
+        brain = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks)
+        actor_critic = ActorCritic(version=version, tau=config['ppo']['tau_init'])
+        return PPOOpponentPoolEngine(
+            brain,
+            actor_critic,
+            pool,
+            is_oracle=False,
+            version=version,
+            device=device,
+            enable_amp=True,
+            enable_rule_based_agari_guard=True,
+            name='opp_pool',
+            eval_mode=False,
+        )
+
     def train_play(self, mortal, dqn, device, beta_sel=0.0):
         torch.backends.cudnn.benchmark = False
         engine_chal = MortalEngine(
@@ -245,7 +317,7 @@ class TrainPlayer:
         )
         rankings = env.py_vs_py(
             challenger = engine,
-            champion = self.baseline_engine,
+            champion = self._make_opponent_engine(device),
             seed_start = (self.train_seed, self.train_key),
             seed_count = self.seed_count,
         )

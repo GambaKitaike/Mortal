@@ -112,6 +112,9 @@ def _finalize_ppo_trajectories(engine, file_list, param_version, *, client_label
                 chip_deltas=chip_deltas, beta=beta, chip_value=chip_value,
                 lambda_opp=0.0,
             )
+            rank_prob = reward_calc.calc_rank_prob(player_id, grp_feature, rank_by_player)
+            grp_pred_rank = int(rank_prob[-2].argmax())
+            grp_actual_rank = int(rank_by_player[player_id])
             sotensu = reward_calc.calc_delta_points(player_id, grp_feature, final_scores) / 1000.0
             juni = reward_calc.calc_delta_pt(player_id, grp_feature, rank_by_player)
             sotensu_terms = reward_calc.alpha * sotensu
@@ -128,6 +131,8 @@ def _finalize_ppo_trajectories(engine, file_list, param_version, *, client_label
                 steps[i]['reward_sotensu'] = float(reward_sotensu[i])
                 steps[i]['reward_grp'] = float(reward_grp[i])
                 steps[i]['reward_chip'] = float(reward_chip[i])
+                steps[i]['grp_pred_rank'] = float(grp_pred_rank)
+                steps[i]['grp_actual_rank'] = float(grp_actual_rank)
 
             batch = numpy_trajectory_to_batch(steps, param_version=param_version)
             traj_name = path.basename(file_path).replace('.json.gz', '.traj').replace('.mjson', '.traj')
@@ -198,6 +203,7 @@ def main():
                 device=device,
                 enable_amp=True,
                 enable_quick_eval=False,
+                enable_rule_based_agari_guard=True,
                 name='trainee',
             )
             rankings, file_list = train_player.train_play_ppo(engine, device)

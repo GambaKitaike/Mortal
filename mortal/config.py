@@ -37,3 +37,11 @@ _ppo_defaults = {
     'max_steps': 0,
 }
 config.setdefault('ppo', {}).update({k: v for k, v in _ppo_defaults.items() if k not in config.get('ppo', {})})
+_opp_pool_defaults = {
+    'enabled': False,
+    'past_k': 5,
+    'latest_prob': 0.5,
+}
+config.setdefault('opponent_pool', {}).update(
+    {k: v for k, v in _opp_pool_defaults.items() if k not in config.get('opponent_pool', {})},
+)

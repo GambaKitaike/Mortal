@@ -113,6 +113,11 @@ def train_ppo():
             'config': config,
         }
         torch.save(state, state_file)
+        ckpt_dir = Path(state_file).parent / 'checkpoints'
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        numbered = ckpt_dir / f'step_{steps:06d}.pth'
+        torch.save(state, numbered)
+        logging.info(f'saved numbered checkpoint: {numbered}')
 
     def flush_stats():
         nonlocal stat_count
@@ -164,6 +169,32 @@ def train_ppo():
     CALL_ACTION_MIN = 38
     CALL_ACTION_MAX = 42
     RIICHI_ACTION = 37
+    AKA_OBS_ROWS = slice(4, 7)
+
+    grp_calib_abs_err_sum = 0.0
+    grp_calib_n = 0
+
+    def _aka_held_mask(obs_tensor: torch.Tensor) -> torch.Tensor:
+        return obs_tensor[:, AKA_OBS_ROWS, :].abs().sum(dim=(1, 2)) > 0
+
+    def _mean_pi_call(probs: torch.Tensor, masks: torch.Tensor, sel: torch.Tensor) -> float | None:
+        if not sel.any():
+            return None
+        return probs[sel][:, CALL_ACTION_MIN:CALL_ACTION_MAX + 1].sum(dim=1).mean().item()
+
+    def _flush_grp_calibration(force: bool = False):
+        nonlocal grp_calib_abs_err_sum, grp_calib_n
+        if grp_calib_n == 0:
+            return
+        if not force and steps % 2000 != 0:
+            return
+        _append_diag({
+            'event': 'grp_calibration',
+            'mean_abs_rank_err': grp_calib_abs_err_sum / grp_calib_n,
+            'n_hanchan': grp_calib_n,
+        })
+        grp_calib_abs_err_sum = 0.0
+        grp_calib_n = 0
 
     def _tensor_stats(values: torch.Tensor) -> dict | None:
         n = int(values.numel())
@@ -263,6 +294,8 @@ def train_ppo():
         nonlocal steps
         nonlocal stat_count
         nonlocal trainer_param_version
+        nonlocal grp_calib_abs_err_sum
+        nonlocal grp_calib_n
 
         obs = traj.obs.to(device=device, dtype=torch.float32)
         actions = traj.action.to(device=device)
@@ -291,17 +324,28 @@ def train_ppo():
             probs_all = masked_softmax(logits_all, masks)
             call_possible = masks[:, CALL_ACTION_MIN:CALL_ACTION_MAX + 1].any(dim=1)
             riichi_possible = masks[:, RIICHI_ACTION]
-            pi_call = None
+            aka_held = _aka_held_mask(obs)
+            call_aka = call_possible & aka_held
+            call_no_aka = call_possible & ~aka_held
+            pi_call = _mean_pi_call(probs_all, masks, call_possible)
+            pi_call_aka = _mean_pi_call(probs_all, masks, call_aka)
+            pi_call_no_aka = _mean_pi_call(probs_all, masks, call_no_aka)
             pi_riichi = None
-            if call_possible.any():
-                pi_call = probs_all[call_possible][:, 38:42].sum(dim=1).mean().item()
             if riichi_possible.any():
-                pi_riichi = probs_all[riichi_possible, 37].mean().item()
+                pi_riichi = probs_all[riichi_possible, RIICHI_ACTION].mean().item()
+            ratio_aka_no_aka = None
+            if pi_call_aka is not None and pi_call_no_aka is not None and pi_call_no_aka > 0:
+                ratio_aka_no_aka = pi_call_aka / pi_call_no_aka
             _append_diag({
                 'event': 'action_mass',
                 'pi_call_given_possible': pi_call,
+                'pi_call_given_possible_aka_held': pi_call_aka,
+                'pi_call_given_possible_no_aka': pi_call_no_aka,
+                'pi_call_aka_over_no_aka': ratio_aka_no_aka,
                 'pi_riichi_given_possible': pi_riichi,
                 'n_call_possible': int(call_possible.sum().item()),
+                'n_call_possible_aka_held': int(call_aka.sum().item()),
+                'n_call_possible_no_aka': int(call_no_aka.sum().item()),
                 'n_riichi_possible': int(riichi_possible.sum().item()),
             })
 
@@ -339,6 +383,11 @@ def train_ppo():
                 traj.reward_chip,
                 episode_indices,
             )
+        if traj.grp_pred_rank is not None and traj.grp_actual_rank is not None:
+            for end in episode_indices:
+                err = abs(float(traj.grp_pred_rank[end].item()) - float(traj.grp_actual_rank[end].item()))
+                grp_calib_abs_err_sum += err
+                grp_calib_n += 1
 
         n = obs.shape[0]
         mb_size = minibatch_size if minibatch_size and minibatch_size < n else n
@@ -448,6 +497,7 @@ def train_ppo():
                 stat_count += 1
 
         steps += 1
+        _flush_grp_calibration()
 
         if epoch_metrics:
             logging.info(
@@ -516,6 +566,7 @@ def train_ppo():
 
     if stat_count:
         flush_stats()
+    _flush_grp_calibration(force=True)
     save_checkpoint()
     inline_test_play = not (max_steps and test_every > max_steps)
     if online and inline_test_play and steps % test_every != 0:
