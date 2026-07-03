@@ -29,7 +29,7 @@ from model import (
     load_ppo_from_mortal_checkpoint,
 )
 from ppo import compose_kyoku_reward, compute_gae, masked_softmax, action_log_probs
-from ppo_engine import PPOEngine
+from ppo_engine import PPOEngine, dump_engine_config
 from ppo_dataloader import assign_rewards_and_dones, recompute_logp_old
 from ppo_transport import TrajectoryBatch, pack_trajectory, unpack_trajectory
 from reward_calculator import RewardCalculator
@@ -335,6 +335,54 @@ def check_dqn_one_vs_three(ckpt: str, buf: StringIO):
     log(f'  PASS: grp_baseline path, 1 hanchan, json.gz={n_logs}', buf)
 
 
+def check_train_engine_config(ckpt: str, buf: StringIO):
+    log('(10) train client engine config (guard OFF / eval_mode False / record_trajectory)', buf)
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    cfg = state['config']['resnet']
+    device = torch.device('cpu')
+
+    mortal = Brain(version=version, **cfg).eval()
+    mortal.load_state_dict(state['mortal'])
+    ac = ActorCritic(version=version, tau=1.0).eval()
+    load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+    engine = PPOEngine(
+        mortal, ac, version=version, device=device,
+        enable_amp=True, enable_quick_eval=False, name='trainee',
+    )
+    dumped = dump_engine_config(engine)
+    log(f'  trainee dump: {dumped}', buf)
+    assert not engine.enable_rule_based_agari_guard
+    assert not engine.eval_mode
+    assert engine.record_trajectory
+    log('  PASS: trainee guard=False eval_mode=False record_trajectory=True', buf)
+
+
+def check_pool_engine_no_trajectory(buf: StringIO):
+    log('(11) opponent pool engine has no pending_steps', buf)
+    from opponent_pool import OpponentPool
+    from ppo_pool_engine import PPOOpponentPoolEngine
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_pool_') as tmp:
+        ckpt_dir = Path(tmp)
+        init0 = ckpt_dir / 'step_000000.pth'
+        torch.save({'mortal': {}, 'actor_critic': {}, 'steps': 0}, init0)
+        pool = OpponentPool(ckpt_dir, past_k=5, latest_prob=0.5, fallback_checkpoint=init0)
+        mortal = Brain(version=4, conv_channels=192, num_blocks=40).eval()
+        ac = ActorCritic(version=4, tau=1.0).eval()
+        opp = PPOOpponentPoolEngine(
+            mortal, ac, pool, version=4, device=torch.device('cpu'),
+            enable_amp=False, name='opp_pool', eval_mode=False,
+        )
+        dumped = dump_engine_config(opp)
+        log(f'  pool dump: {dumped}', buf)
+        assert not opp.enable_rule_based_agari_guard
+        assert not hasattr(opp, 'pending_steps')
+        assert dumped['has_pending_steps'] is False
+    log('  PASS: pool engine guard=False, no pending_steps / record_trajectory', buf)
+
+
 def check_checkpoint_load(ckpt: str, buf: StringIO):
     log('(6) legacy checkpoint load after chip head removal', buf)
     state = torch.load(ckpt, weights_only=True, map_location='cpu')
@@ -384,9 +432,11 @@ def main():
     check_sampling(args.checkpoint, buf)
     check_online_chips(buf, args.online_log, version)
     check_dqn_one_vs_three(args.checkpoint, buf)
+    check_train_engine_config(args.checkpoint, buf)
+    check_pool_engine_no_trajectory(buf)
 
     log('', buf)
-    log('ALL 9 CHECKS PASSED', buf)
+    log('ALL 11 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0

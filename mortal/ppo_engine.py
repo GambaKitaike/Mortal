@@ -10,6 +10,17 @@ from model import ActorCritic, Brain
 from ppo import action_log_probs
 
 
+def dump_engine_config(engine) -> dict:
+    return {
+        'name': engine.name,
+        'engine_type': getattr(engine, 'engine_type', None),
+        'enable_rule_based_agari_guard': engine.enable_rule_based_agari_guard,
+        'eval_mode': getattr(engine, 'eval_mode', None),
+        'record_trajectory': getattr(engine, 'record_trajectory', None),
+        'has_pending_steps': hasattr(engine, 'pending_steps'),
+    }
+
+
 class PPOEngine:
     engine_type = 'mortal'
 
@@ -41,22 +52,25 @@ class PPOEngine:
         self.record_trajectory = record_trajectory
         self.pending_by_game: dict[str, dict[int, dict]] = {}
         self.pending_steps: list[dict] = []
+        self.illegal_action_fallback_count = 0
 
-    @staticmethod
-    def _pick_actions(logits: torch.Tensor, masks_t: torch.Tensor, *, eval_mode: bool) -> torch.Tensor:
+    def _pick_actions(self, logits: torch.Tensor, masks_t: torch.Tensor, *, eval_mode: bool) -> torch.Tensor:
         # float32: AMP 下の -inf mask が illegal action を argmax するのを防ぐ
         masked = logits.float().masked_fill(~masks_t, -1e9)
         if eval_mode:
             actions = masked.argmax(-1)
         else:
             actions = Categorical(logits=masked).sample()
+        fallback = 0
         for i in range(masks_t.shape[0]):
             if not masks_t[i, actions[i]]:
+                fallback += 1
                 legal = masks_t[i].nonzero(as_tuple=True)[0]
                 if legal.numel() == 0:
                     actions[i] = 0
                 else:
                     actions[i] = legal[masked[i, legal].argmax()]
+        self.illegal_action_fallback_count += fallback
         return actions
 
     def react_batch(self, obs, masks, invisible_obs, step_meta=None):
@@ -82,7 +96,7 @@ class PPOEngine:
                 phi = self.brain(obs_t)
 
         logits, _values = self.actor_critic(phi, masks_t)
-        actions = PPOEngine._pick_actions(logits, masks_t, eval_mode=self.eval_mode)
+        actions = self._pick_actions(logits, masks_t, eval_mode=self.eval_mode)
         is_greedy = torch.ones(batch_size, dtype=torch.bool, device=self.device) if self.eval_mode else torch.zeros(batch_size, dtype=torch.bool, device=self.device)
 
         logp_old = action_log_probs(logits, masks_t, actions)

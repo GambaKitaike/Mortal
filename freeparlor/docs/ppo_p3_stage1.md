@@ -1,9 +1,40 @@
-# PPO P3 — Stage1 本走 (2026-07-03)
+# PPO P3 — Stage1 本走 (2026-07-04 再スタート)
 
 **設計:** `ppo_migration_design.md` §5.1 / §7 P3  
-**run dir:** `/home/gamba/mahjong/runs/ppo/stage1_20260703_064427/`  
-**tmux:** `ppo_p3_20260703_064427`  
+**run dir:** `/home/gamba/mahjong/runs/ppo/stage1_<suffix>/`（再スタート後に更新）  
+**tmux:** `ppo_p3_<suffix>`  
 **ブランチ:** `ppo-migration`
+
+---
+
+## インシデント — 汚染 run 中止 (2026-07-04)
+
+**保全 dir:** `/home/gamba/mahjong/runs/ppo/ppo_p3_aborted_20260703_064427/`（旧 `stage1_20260703_064427`）  
+**到達 step:** ~4000（trainer checkpoint 保存済み、本走判定には不適）
+
+### 原因連鎖
+
+1. **訓練 client に rule-based agari guard ON** — `client.py` で `PPOEngine(..., enable_rule_based_agari_guard=True)` を指定。設計 §4 の on-policy 前提（行動 ∼ π、logp_old 整合）に対し、Rust 側で和了拒否時に別行動へ上書き → **trajectory の (action, logp_old) が実際の方策分布と乖離**。
+2. **相手 pool も guard ON** — `player.py` `_make_opponent_engine` 同様。trainee 以外の席でも行動上書き（pool は trajectory 非記録だが対局分布は歪む）。
+3. **サイレント fallback** — `ppo_engine._pick_actions` の残余ループ（非法行動補正）が発動してもログなし。fp32/-1e9 化後は NaN 経路のみ想定だが、非ゼロ時の検知手段がなかった。
+4. **構成 assert 欠如** — 起動時に guard/eval_mode/record_trajectory を検証する検定がなく、上記が本走 step ~60 まで気づかれず進行。
+
+### 修正 (2026-07-04)
+
+| 項目 | 内容 |
+|---|---|
+| ガード範囲 | 訓練 client / pool: guard **OFF**（デフォルト）。eval (`test_play` 系): guard **ON** 維持 |
+| 設計書 §4 | 「訓練 rollout への行動上書き（rule-based guard 含む）は禁止。eval は本家準拠で guard ON」追記 |
+| カウンタ | `illegal_action_fallback_count` を client ログ出力（非ゼロで WARNING） |
+| Rust | guard 発火時 `stderr` 1 行（eval 可視化） |
+| 検定 (10) | trainee: guard=False / eval_mode=False / record_trajectory=True |
+| 検定 (11) | pool engine: `pending_steps` なし（trajectory 混入防止） |
+
+### 再スタート判断
+
+- step 4000 時点の checkpoint は on-policy 汚染の疑いがあり **学習継続不可**。
+- 汚染 run は `ppo_p3_aborted_*` として削除せず保全（forensic 用）。
+- init は従来通り `beta1_huber_192x40`、config は前回 P3 同一（lr=2e-5, τ=1.0, c_ent=0.01, 16k, save_every=2000）。
 
 ---
 
@@ -11,68 +42,44 @@
 
 | 項目 | 状態 | 備考 |
 |---|---|---|
-| (a) 相手プール §4 | **本走前に実装** | 旧: `baseline_engine`(grp_baseline DQN) 固定。新: `opponent_pool` + `PPOOpponentPoolEngine` — 最新50% / 過去K=5一様50%、per-game sample |
-| (b) action_mass 赤条件 | **本走前に拡張** | `pi_call_given_possible_aka_held` / `_no_aka` / `aka_over_no_aka` + n |
-| (c) GRP calibration §8 | **本走前に追加** | client で pred/actual rank、trainer で 2k step ごと `grp_calibration` イベント |
+| (a) 相手プール §4 | **実装済** | `opponent_pool` + `PPOOpponentPoolEngine` |
+| (b) action_mass 赤条件 | **実装済** | `pi_call_given_possible_aka_held` / `_no_aka` / `aka_over_no_aka` + n |
+| (c) GRP calibration §8 | **実装済** | client pred/actual rank、trainer 2k step ごと `grp_calibration` |
+| (d) ガード範囲・検定 (10)(11) | **本走前修正** | 2026-07-04 再スタート準備で適用 |
 
 ---
 
-## 1. 開始報告 (2026-07-03 06:44 JST)
+## 1. 開始報告
+
+（再スタート起動後に記入）
 
 ### Config 全文
 
-```toml
-# /home/gamba/mahjong/runs/ppo/stage1_20260703_064427/config.toml
-[control]
-version = 4
-online = true
-save_every = 2000
-test_every = 100000   # inline test_play 無効 (> max_steps)
-submit_every = 50
+pending
 
-[ppo]
-enabled = true
-lr = 2e-5
-tau_init = 1.0
-c_ent = 0.01
-eps_clip = 0.2
-ppo_epochs = 4
-minibatch_size = 512
-max_steps = 16000
-init_checkpoint = '/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth'
+### 検定 (10)(11) ログ
 
-[opponent_pool]
-enabled = true
-past_k = 5
-latest_prob = 0.5
-```
+pending
 
-（その他 train_play client×3, env α=β=γ=1, resnet 192×40 — P2c 同型）
+### カウンタ初期値
+
+| カウンタ | 初回 session 後 |
+|---|---|
+| `illegal_action_fallback_count` | pending |
+| `[agari_guard]` stderr（訓練 client） | 期待 0 行 |
 
 ### 計装確認
 
-| イベント | 期待 | 起動後 (step ~60 確認) |
+| イベント | 期待 | 起動後 |
 |---|---|---|
-| `action_mass` | π(鳴き\|可能∧赤) / π(鳴き\|可能∧赤なし) + n | **OK** — 例 step0: π_aka=0.229 (n=15), π_no_aka=0.130 (n=12), ratio=1.77 |
-| `advantage_decomp` | P2c 同 | **OK** — 60 行/step 同期 |
-| `kyoku_reward_decomp` | P2c 同 | **OK** |
-| `grp_calibration` | step 2000/4000/… | pending（2k 到達後） |
+| `action_mass` | π(鳴き\|可能∧赤) / π(鳴き\|可能∧赤なし) + n | pending |
+| `advantage_decomp` | P2c 同 | pending |
+| `kyoku_reward_decomp` | P2c 同 | pending |
+| `grp_calibration` | step 2000/4000/… | pending |
 
 ### Mem 1h 推移（5分間隔、`logs/mem_monitor.log`）
 
-| 時刻 | Mem used | available | Swap | GPU mem |
-|---|---:|---:|---:|---:|
-| 06:56:17 | 1.4 GiB | 22 GiB | 36 MiB | 1277 / 8151 MiB (1%) |
-
-※ 1h 分は run 中に `mem_monitor.log` へ追記継続。
-
-### 起動前残党チェック
-
-- port 5000: clear（run スクリプト内 pkill + fuser）
-- GPU: idle 確認後起動
-- 初回起動で opponent pool fallback が DQN ckpt を読み `KeyError: actor_critic` → **修正** (`step_000000.pth` 生成 + DQN fallback loader)
-- q_proxy 形状不一致 → **修正** (06:52 再起動)
-- grp_calib `nonlocal` 漏れ → **修正** (06:56 再起動、step 60 まで正常進行)
+pending
 
 ---
 

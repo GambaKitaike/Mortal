@@ -355,13 +355,18 @@ impl BatchAgent for MortalBatchAgent {
                 // the best alternative option other than agari.
                 let mut q_values = self.q_values[action_idx];
                 q_values[43] = f32::MIN;
-                q_values
+                let guarded = q_values
                     .iter()
                     .enumerate()
                     .filter(|&(i, _)| masks[i])
                     .max_by(|(_, l), (_, r)| l.total_cmp(r))
                     .map(|(i, _)| i)
-                    .unwrap_or(orig_action)
+                    .unwrap_or(orig_action);
+                eprintln!(
+                    "[agari_guard] player={actor} orig=43 -> {guarded} ({})",
+                    state.brief_info()
+                );
+                guarded
             } else {
                 orig_action
             };

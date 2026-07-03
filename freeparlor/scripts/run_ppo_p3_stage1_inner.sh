@@ -65,6 +65,12 @@ if nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep 
 fi
 echo "port 5000 clear, GPU idle"
 
+echo "=== Pre-flight verify (checks 10/11) ==="
+conda run -n mortal python "$REPO/freeparlor/scripts/verify_ppo_p1.py" \
+  --checkpoint /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth \
+  --grp-state /home/gamba/mahjong/runs/grp.pth \
+  2>&1 | tee "$LOG_DIR/verify_p1.log" | tail -20
+
 echo "=== Setup run dir ==="
 mkdir -p "$RUN_DIR"/{tb,test_play,buffer,drain,checkpoints}
 cp "$PPO_CONFIG" "$CFG"

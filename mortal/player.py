@@ -251,7 +251,9 @@ class TrainPlayer:
         num_blocks = config['resnet']['num_blocks']
         brain = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks)
         actor_critic = ActorCritic(version=version, tau=config['ppo']['tau_init'])
-        return PPOOpponentPoolEngine(
+        from ppo_engine import dump_engine_config
+
+        opp = PPOOpponentPoolEngine(
             brain,
             actor_critic,
             pool,
@@ -259,10 +261,14 @@ class TrainPlayer:
             version=version,
             device=device,
             enable_amp=True,
-            enable_rule_based_agari_guard=True,
             name='opp_pool',
             eval_mode=False,
         )
+        opp_cfg = dump_engine_config(opp)
+        logging.info(f'opponent pool engine config dump: {opp_cfg}')
+        assert not opp.enable_rule_based_agari_guard, 'train rollout: pool guard must be OFF'
+        assert not hasattr(opp, 'pending_steps'), 'pool engine must not record trajectories'
+        return opp
 
     def train_play(self, mortal, dqn, device, beta_sel=0.0):
         torch.backends.cudnn.benchmark = False

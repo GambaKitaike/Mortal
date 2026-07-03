@@ -194,7 +194,7 @@ def main():
         logging.info(f'param has been updated (beta_sel={beta_sel}, ppo={use_ppo})')
 
         if use_ppo:
-            from ppo_engine import PPOEngine
+            from ppo_engine import PPOEngine, dump_engine_config
             engine = PPOEngine(
                 mortal,
                 head,
@@ -203,10 +203,19 @@ def main():
                 device=device,
                 enable_amp=True,
                 enable_quick_eval=False,
-                enable_rule_based_agari_guard=True,
                 name='trainee',
             )
+            trainee_cfg = dump_engine_config(engine)
+            logging.info(f'trainee engine config dump: {trainee_cfg}')
+            assert not engine.enable_rule_based_agari_guard, 'train rollout: guard must be OFF'
+            assert not engine.eval_mode, 'train rollout: eval_mode must be False'
+            assert engine.record_trajectory, 'train rollout: record_trajectory must be enabled'
             rankings, file_list = train_player.train_play_ppo(engine, device)
+            fb = engine.illegal_action_fallback_count
+            if fb:
+                logging.warning(f'illegal_action_fallback_count={fb} (expected 0)')
+            else:
+                logging.info(f'illegal_action_fallback_count={fb}')
             logs = _finalize_ppo_trajectories(
                 engine, file_list, param_version, client_label=client_label,
             )

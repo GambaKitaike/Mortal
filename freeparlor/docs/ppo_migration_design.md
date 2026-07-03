@@ -114,6 +114,7 @@ L = L_clip(θ)                          # PPO clipped surrogate, ε_clip=0.2
   → 方策が動いても学習対象分布の急変を緩和。
 - on-policy 性の管理: client の行動方策は学習方策と同一 checkpoint（logp_old を保存）。
   checkpoint 更新ラグによる軽度の staleness は PPO ratio が吸収（ratio 分布を監視、§8）。
+- **訓練 rollout への行動上書き（rule-based guard 含む）は禁止。eval は本家準拠で guard ON。**
 - インフラ注意（Phase5 の教訓踏襲）: run 起動前に pkill + `ss -tlnp | grep 5000` で
   残党ゼロ確認、buffer/drain クリア。
 

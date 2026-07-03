@@ -1,4 +1,4 @@
-PPO P1 sanity verification (re-run 2026-07-02T23:14:14+09:00)
+PPO P1 sanity verification (re-run 2026-07-04T03:13:59+09:00)
 checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
 online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 
@@ -17,12 +17,18 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 (6) legacy checkpoint load after chip head removal
   PASS: strict=False ignores chip_net; ActorCritic loads main heads
 (7) pure π sampling
-  TV distance=0.00269, illegal=0
+  TV distance=0.00459, illegal=0
   PASS: samples match softmax(masked logits), no illegal actions
 (8) online chip from log
   player_id=0 n_kyoku=8 nonzero_kyoku=3 sum=-5.0
   PASS: log-derived chip_delta has non-zero entries
 (9) DQN MortalEngine OneVsThree regression (1 hanchan)
   PASS: grp_baseline path, 1 hanchan, json.gz=4
+(10) train client engine config (guard OFF / eval_mode False / record_trajectory)
+  trainee dump: {'name': 'trainee', 'engine_type': 'mortal', 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'has_pending_steps': True}
+  PASS: trainee guard=False eval_mode=False record_trajectory=True
+(11) opponent pool engine has no pending_steps
+  pool dump: {'name': 'opp_pool', 'engine_type': 'mortal', 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': None, 'has_pending_steps': False}
+  PASS: pool engine guard=False, no pending_steps / record_trajectory
 
-ALL 9 CHECKS PASSED
+ALL 11 CHECKS PASSED
