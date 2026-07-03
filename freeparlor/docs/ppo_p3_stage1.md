@@ -1,8 +1,8 @@
 # PPO P3 — Stage1 本走 (2026-07-04 再スタート)
 
 **設計:** `ppo_migration_design.md` §5.1 / §7 P3  
-**run dir:** `/home/gamba/mahjong/runs/ppo/stage1_<suffix>/`（再スタート後に更新）  
-**tmux:** `ppo_p3_<suffix>`  
+**run dir:** `/home/gamba/mahjong/runs/ppo/stage1_20260704_040100/`  
+**tmux:** `ppo_p3_20260704_040100`  
 **ブランチ:** `ppo-migration`
 
 ---
@@ -50,37 +50,87 @@
 
 ---
 
-## 1. 開始報告
-
-（再スタート起動後に記入）
+## 1. 開始報告 (2026-07-04 04:07 JST)
 
 ### Config 全文
 
-pending
+```toml
+# /home/gamba/mahjong/runs/ppo/stage1_20260704_040100/config.toml
+[control]
+version = 4
+online = true
+save_every = 2000
+test_every = 100000   # inline test_play 無効 (> max_steps)
+submit_every = 50
+
+[ppo]
+enabled = true
+lr = 2e-5
+tau_init = 1.0
+c_ent = 0.01
+eps_clip = 0.2
+ppo_epochs = 4
+minibatch_size = 512
+max_steps = 16000
+init_checkpoint = '/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth'
+
+[opponent_pool]
+enabled = true
+past_k = 5
+latest_prob = 0.5
+```
+
+（その他 train_play client×3, env α=β=γ=1, resnet 192×40 — P2c 同型）
 
 ### 検定 (10)(11) ログ
 
-pending
+```
+(10) train client engine config (guard OFF / eval_mode False / record_trajectory)
+  trainee dump: {'name': 'trainee', 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'has_pending_steps': True}
+  PASS: trainee guard=False eval_mode=False record_trajectory=True
+(11) opponent pool engine has no pending_steps
+  pool dump: {'name': 'opp_pool', 'enable_rule_based_agari_guard': False, 'has_pending_steps': False}
+  PASS: pool engine guard=False, no pending_steps / record_trajectory
+ALL 11 CHECKS PASSED
+```
+
+client 起動時も同一 dump を出力（例 client0 step_meta 後）:
+```
+trainee engine config dump: guard=False eval_mode=False record_trajectory=True
+opponent pool engine config dump: guard=False has_pending_steps=False
+```
 
 ### カウンタ初期値
 
-| カウンタ | 初回 session 後 |
+| カウンタ | 初回 session 後 (client0/1/2) |
 |---|---|
-| `illegal_action_fallback_count` | pending |
-| `[agari_guard]` stderr（訓練 client） | 期待 0 行 |
+| `illegal_action_fallback_count` | **0**（全 client、WARNING なし） |
+| `trajectory orphan` / `game key missing` | **0** |
+| `[agari_guard]` stderr（訓練 client） | 0 行（期待通り） |
 
 ### 計装確認
 
-| イベント | 期待 | 起動後 |
+| イベント | 期待 | 起動後 (step ~6 確認) |
 |---|---|---|
-| `action_mass` | π(鳴き\|可能∧赤) / π(鳴き\|可能∧赤なし) + n | pending |
-| `advantage_decomp` | P2c 同 | pending |
-| `kyoku_reward_decomp` | P2c 同 | pending |
+| `action_mass` | π(鳴き\|可能∧赤) / π(鳴き\|可能∧赤なし) + n | **OK** — trainer step 5–6 進行、diag 出力確認 |
+| `advantage_decomp` | P2c 同 | **OK** |
+| `kyoku_reward_decomp` | P2c 同 | **OK** |
 | `grp_calibration` | step 2000/4000/… | pending |
 
 ### Mem 1h 推移（5分間隔、`logs/mem_monitor.log`）
 
-pending
+| 時刻 | Mem used | available | Swap | GPU mem |
+|---|---:|---:|---:|---:|
+| 04:07:21 | 1.4 GiB | 22 GiB | 32 MiB | 1680 / 8151 MiB (8%) |
+
+※ 1h 分は run 中に `mem_monitor.log` へ追記継続。
+
+### 起動前残党チェック
+
+- port 5000: clear
+- GPU: idle 確認後起動
+- libriichi.so: `PYO3_PYTHON=$CONDA_PREFIX/bin/python cargo build` で再ビルド済み（import OK）
+- 中間 run `033843` は game_key 不一致で trajectory 全 orphan → `ppo_p3_aborted_20260704_033843` に保全
 
 ---
 

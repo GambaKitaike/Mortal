@@ -248,6 +248,7 @@ impl BatchGame {
             .enumerate()
             .map(|(game_idx, (idxs, &seed))| {
                 let split = ["a", "b", "c", "d"][game_idx % 4];
+                // Decimal key matches json.gz log filename ({seed}_{key}_{split}).
                 let game_key = format!("{}_{}_{}", seed.0, seed.1, split);
                 let mut oracle_obs_versions = [None; 4];
                 for (i, idx) in idxs.iter().enumerate() {
