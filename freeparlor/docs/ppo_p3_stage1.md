@@ -6,6 +6,7 @@
 **run dir (3回目):** `ppo_p3_aborted3_perf_gate_20260704_214600`（step 251、旧 0.2 閾値ゲート中止 → 再判定で安定確認）  
 **run dir (4回目):** `ppo_p3_aborted4_20260704_225400`（~step 50、trajectory skip 大量発生 → データ整合性例外で中止）  
 **run dir (5回目):** `ppo_p3_aborted5_20260705_043200`（step ~1400、`sum(done)=1` 系統不一致 → 中止）  
+**run dir (6回目):** `stage1_20260705_053301`（**本走 GO** — 2026-07-05 06:29 JST 発進、at_kyoku 修正後）  
 **run dir (5回目・初回):** `stage1_20260705_014852`（step 520 まで進行後、monitor grep pipefail で誤停止 → 修正再発進）  
 **ブランチ:** `ppo-migration`  
 
@@ -363,6 +364,39 @@ for idx in &self.indexes {
 - done step の `reward` / `reward_*` がログ独立計算と一致（atol=1e-5）、非 done は 0
 
 **(14) は join・kan 記録・at_kyoku・報酬合成を一括検出する発進前最上位検定。**
+
+---
+
+## 1e. 開始報告 (6回目 — 2026-07-05 06:29 JST)
+
+### 開始
+
+| 項目 | 値 |
+|---|---|
+| 開始時刻 | **2026-07-05 06:29:31 JST**（step 1） |
+| tmux / foreground | `ppo_p3_20260705_053301`（2回目 foreground 再起動で本発進） |
+| run dir | `/home/gamba/mahjong/runs/ppo/stage1_20260705_053301/` |
+| 到達 step（報告時点） | **40** / 16000 |
+| commit | `efd8f2e`（at_kyoku 修正 + 検定 14 + pre-flight rebuild） |
+
+### 検定 (14) — pre-flight ログ
+
+```
+(13) games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=40
+(14) games=20 passed=20 end_kyoku/done/reward all OK
+ALL 14 CHECKS PASSED
+```
+
+### step 40 監視4項目
+
+| 項目 | 値 | 判定 |
+|---|---:|---|
+| `trajectory step count mismatch` | **0** | OK |
+| `illegal_action_fallback_count` | **0** | OK |
+| `online chip resolution failed` | **0** | OK |
+| `loader size delta` (INFO) | **37** | 報告（非致命・凍結除外） |
+
+**凍結:** step 100 到達後に再確認予定。必須3項目 + (14) PASS で本走継続中。
 
 ---
 
