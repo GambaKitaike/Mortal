@@ -257,6 +257,53 @@ steps: 176 / loader kyoku (grp): 9
 
 **判定:** 必須3項目 + NaN 全 0、局境界 50/50 一致（NW 推定ベース、§3 参照）→ **loader_delta は局境界非関与のクラス未特定 delta として凍結条件から除外**。**本走は判定窓（step 8000–16000）まで凍結**（2026-07-05 03:15 JST 宣言、§3 追記 03:45 JST）。
 
+### 5. 循環排除版（done×end_kyoku 全数）（2026-07-05 04:06 JST 解析）
+
+**対象 run:** `stage1_20260705_023140`（走行継続中、解析時 step **1314**）  
+**方法:** drain/buffer `.traj` を消費前に `/tmp/traj_archive` へ随時退避コピー（**1240 件**、run 継続中も追記）。対応 `json.gz` は `/tmp/loader_delta_archive`（**1000 件**、train_play rmtree 対策の既存退避 + 解析中追記）。GameplayLoader **非経由**で `json.gz` 行 JSON の `type=="end_kyoku"` を生カウント。(a) は退避 `.traj` の `sum(done)`（`ppo_transport.unpack_trajectory`・CPU・`nice 19`・シングルプロセス）。
+
+#### スナップショット
+
+| 項目 | 値 |
+|---|---:|
+| `/tmp/traj_archive` `.traj` | **1240** |
+| `/tmp/loader_delta_archive` `.json.gz` | **1000** |
+| ペア成立（同一 `game_key`） | **940 / 1240** |
+| json 欠落（seed 10000–10024 × 3 session × 4 split） | **300** — train_play rmtree 前未退避 |
+
+#### 全数突合（940 ペア）
+
+| 検証 | 結果 |
+|---|---:|
+| `sum(done) == end_kyoku` | **0 / 940** |
+| `sum(done) == end_kyoku − 1`（天和級候補） | **2** — 目視分類 **0 件**（下記） |
+| その他不一致 | **938 / 940** |
+
+**`sum(done)` 分布（940 ペア）:** `{1: 940}` — **全ペアで `sum(done)=1` 固定**。  
+**`end_kyoku` 分布（940 ペア）:** min **2** / mean **10.28** / max **18**。  
+典型不一致: `sum(done)=1` vs `end_kyoku≈10`（Δ = **−9** 中心）。
+
+#### 天和級候補（2 件）目視
+
+| game_key | sum(done) | end_kyoku | 分類 |
+|---|---:|---:|---|
+| `10047_9886577253662374531_c` | 1 | 2 | **非天和** — 2 局ログ、trainee（seat 2）全局で打牌あり |
+| `10070_7649423605990334612_d` | 1 | 2 | **非天和** — 同上（seat 3） |
+
+天和級（trainee 無判断局）: **0 件**（期待 ≈0 — 該当パターンは確認されず）。2 件は **`sum(done)=1` 固定の副作用**で `end_kyoku=2` のとき偶然 `end_kyoku−1` 式を満たしただけ。
+
+#### 根因（938 件 + 上記 2 件）
+
+packed `.traj` の `done` / `reward` / `reward_*` は **半荘末 1 step のみ非ゼロ**（`done=True` も 1 箇所）。`assign_rewards_and_dones` は `at_kyoku` 別の last step に局末 `done` を立てる設計だが、finalize 時の step `at_kyoku` が実質単一値（おそらく全 step `0`）→ **局数分の `done` が立っていない**。loader 非依存の循環排除検証として **基準1は未達**。
+
+#### 判定（基準1）
+
+| 項目 | 結果 |
+|---|---|
+| 循環排除版 基準1（`sum(done)` × raw `end_kyoku` 全件一致） | **未クローズ** — 940 ペア中一致 **0**、天和級 **0**、その他 **938** |
+| 凍結見直し | **要** — 上記系統的不一致（`sum(done)=1` vs 平均 ~10 局） |
+| 改修バックログ `at_kyoku` 永続化 | **残す** — 診断利便性向上（凍結解除後着手） |
+
 ---
 
 ## 1d. 開始報告 (5回目 — 2026-07-05 02:00 JST)
