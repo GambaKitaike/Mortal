@@ -398,6 +398,17 @@ ALL 14 CHECKS PASSED
 
 **凍結:** step 100 到達後に再確認予定。必須3項目 + (14) PASS で本走継続中。
 
+### インシデント — client 停止で step 40 停滞（2026-07-05 06:34 JST 以降）
+
+| 項目 | 値 |
+|---|---|
+| 最終 trainer step | **40**（06:34:45 以降ログ無更新） |
+| `run_client` | **不在**（server/trainer のみ生存） |
+| 監視ポール | 60回×30s で step 40 固定（step 100 未到達） |
+| 必須3項目 @ step 40 | mismatch=0, fallback=0, chip=0 |
+
+**対応:** inner.sh の client watchdog 再起動を確認。foreground セッション生存中。
+
 ---
 
 ## 1d. 開始報告 (5回目 — 2026-07-05 02:00 JST)
