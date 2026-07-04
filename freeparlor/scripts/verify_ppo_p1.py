@@ -454,6 +454,122 @@ def check_pool_cache_logits_parity(buf: StringIO):
     log('  PASS: pool cache logits parity for 2 checkpoints', buf)
 
 
+def check_trajectory_join(ckpt: str, grp_state: str, buf: StringIO, *, seed_count: int = 13):
+    """(13) Single-client self-play: every log file must join a trajectory (100%)."""
+    import importlib
+    import logging
+    import os
+
+    log(f'(13) trajectory join rate — single client ~{seed_count * 4}-game self-play', buf)
+
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    resnet = state['config']['resnet']
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_join_') as tmp:
+        tmp_path = Path(tmp)
+        log_dir = tmp_path / 'train_play'
+        log_dir.mkdir(parents=True)
+        cfg_path = tmp_path / 'config.toml'
+        cfg_path.write_text(f"""
+[control]
+version = {version}
+
+[grp]
+state_file = '{grp_state}'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
+
+[env]
+pts = [35, 5, -15, -25]
+alpha = 1.0
+gamma_pt = 1.0
+beta = 1.0
+chip_value = 5.0
+
+[resnet]
+conv_channels = {resnet['conv_channels']}
+num_blocks = {resnet['num_blocks']}
+
+[ppo]
+tau_init = 1.0
+""", encoding='utf-8')
+
+        os.environ['MORTAL_CFG'] = str(cfg_path)
+        import config as mortal_config
+        importlib.reload(mortal_config)
+        from client import _finalize_ppo_trajectories
+        from libriichi.arena import OneVsThree
+
+        mortal = Brain(version=version, **resnet).eval().to(device)
+        mortal.load_state_dict(state['mortal'])
+        ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+        load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+        engine = PPOEngine(
+            mortal, ac, version=version, device=device,
+            enable_amp=False, enable_quick_eval=False, name='trainee',
+        )
+        assert not engine.enable_rule_based_agari_guard
+        assert engine.record_trajectory
+
+        clone_m = Brain(version=version, **resnet).eval().to(device)
+        clone_ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+        clone_m.load_state_dict(mortal.state_dict())
+        clone_ac.load_state_dict(ac.state_dict())
+        champion = PPOEngine(
+            clone_m, clone_ac, version=version, device=device,
+            enable_amp=False, enable_quick_eval=False,
+            name='trainee_clone', record_trajectory=False, eval_mode=False,
+        )
+
+        env = OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
+        env.py_vs_py(
+            challenger=engine,
+            champion=champion,
+            seed_start=(90000, 0xBEEF),
+            seed_count=seed_count,
+        )
+
+        file_list = sorted(str(p) for p in log_dir.glob('*.json.gz'))
+        assert file_list, 'no json.gz logs produced'
+
+        warnings = []
+        handler = logging.Handler()
+        handler.emit = lambda rec: warnings.append(rec.getMessage())
+        root = logging.getLogger()
+        old_level = root.level
+        root.addHandler(handler)
+        root.setLevel(logging.WARNING)
+        try:
+            trajectories = _finalize_ppo_trajectories(
+                engine, file_list, param_version=0, client_label='verify13',
+            )
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(old_level)
+
+        n_games = len(file_list)
+        n_joined = len(trajectories)
+        n_key_missing = sum(1 for w in warnings if 'game key missing' in w)
+        n_mismatch = sum(1 for w in warnings if 'step count mismatch' in w)
+        n_orphan = sum(1 for w in warnings if 'trajectory orphan' in w)
+
+        log(
+            f'  games={n_games} joined={n_joined} '
+            f'key_missing={n_key_missing} mismatch={n_mismatch} orphan={n_orphan}',
+            buf,
+        )
+        assert n_key_missing == 0, f'key missing: {n_key_missing}'
+        assert n_mismatch == 0, f'mismatch: {n_mismatch}'
+        assert n_orphan == 0, f'orphan: {n_orphan}'
+        assert n_joined == n_games, f'join rate {n_joined}/{n_games} != 100%'
+    log('  PASS: trajectory join rate 100%', buf)
+
+
 def check_checkpoint_load(ckpt: str, buf: StringIO):
     log('(6) legacy checkpoint load after chip head removal', buf)
     state = torch.load(ckpt, weights_only=True, map_location='cpu')
@@ -506,9 +622,10 @@ def main():
     check_train_engine_config(args.checkpoint, buf)
     check_pool_engine_no_trajectory(buf)
     check_pool_cache_logits_parity(buf)
+    check_trajectory_join(args.checkpoint, args.grp_state, buf)
 
     log('', buf)
-    log('ALL 12 CHECKS PASSED', buf)
+    log('ALL 13 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0

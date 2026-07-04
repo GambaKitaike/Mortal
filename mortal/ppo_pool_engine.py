@@ -99,7 +99,7 @@ class PPOOpponentPoolEngine:
             return
         active = {
             game_key or f'__anon_{i}'
-            for i, (game_key, _seq, _record) in enumerate(step_meta)
+            for i, (game_key, _seq, _record, *_rest) in enumerate(step_meta)
         }
         for key in list(self._game_ckpt):
             if key not in active:
@@ -121,7 +121,7 @@ class PPOOpponentPoolEngine:
         if step_meta is not None and len(step_meta) == batch_size:
             self._prune_game_ckpt(step_meta)
             groups: dict[Path | None, list[int]] = {}
-            for i, (game_key, _seq, _record) in enumerate(step_meta):
+            for i, (game_key, _seq, _record, *_rest) in enumerate(step_meta):
                 ckpt = self._ckpt_for_game(game_key or f'__anon_{i}')
                 groups.setdefault(ckpt, []).append(i)
             actions = [0] * batch_size

@@ -39,6 +39,28 @@ def _log_file_game_key(file_path: str) -> str:
     return path.splitext(base)[0]
 
 
+def _parse_game_key_meta(game_key: str) -> dict:
+    """Parse `{seed}_{key}_{split}` from log filename / game_key."""
+    parts = game_key.rsplit('_', 2)
+    if len(parts) == 3:
+        seed, key, split = parts
+        seat = {'a': 0, 'b': 1, 'c': 2, 'd': 3}.get(split)
+        return {'seed': seed, 'key': key, 'split': split, 'trainee_seat': seat}
+    return {'seed': None, 'key': None, 'split': None, 'trainee_seat': None}
+
+
+def _pending_key_status(pending_by_game: dict | None, game_key: str) -> tuple[bool, int]:
+    if pending_by_game is None:
+        return False, 0
+    if game_key in pending_by_game:
+        return True, len(pending_by_game[game_key])
+    partial = sum(
+        1 for k in pending_by_game
+        if k.startswith(game_key) or game_key.startswith(k)
+    )
+    return False, partial
+
+
 def _finalize_ppo_trajectories(engine, file_list, param_version, *, client_label=''):
     from libriichi.dataset import GameplayLoader
     from chip_from_log import load_kyoku_chip_deltas_from_log
@@ -64,36 +86,54 @@ def _finalize_ppo_trajectories(engine, file_list, param_version, *, client_label
     beta = config['env'].get('beta', 1.0)
     chip_value = config['env'].get('chip_value', 5.0)
 
-    loader = GameplayLoader(version=config['control']['version'], player_names=['trainee'])
+    loader = GameplayLoader(
+        version=config['control']['version'],
+        player_names=['trainee'],
+        oracle=False,
+        always_include_kan_select=True,
+    )
     trajectories = {}
     cursor = 0
     for file_path in sorted(file_list):
         game_key = _log_file_game_key(file_path)
         data = loader.load_gz_log_files([file_path])
         for game in data[0]:
-            game_size = len(game.take_obs())
+            loader_game_size = len(game.take_obs())
             if pending_by_game is not None:
                 steps = pending_by_game.pop(game_key, None)
                 if steps is None:
+                    had_key, partial = _pending_key_status(pending_by_game, game_key)
+                    meta = _parse_game_key_meta(game_key)
                     logging.warning(
-                        'trajectory game key missing (%s), skipping game client=%s file=%s',
-                        game_key, client_label, file_path,
+                        'trajectory game key missing, skipping game '
+                        'client=%s game_key=%s expected_game_size=%s actual_steps=0 '
+                        'pending_had_key=%s pending_partial_match=%s '
+                        'seed=%s split=%s trainee_seat=%s file=%s',
+                        client_label, game_key, loader_game_size,
+                        had_key, partial,
+                        meta['seed'], meta['split'], meta['trainee_seat'], file_path,
                     )
                     continue
             else:
-                steps = pending_flat[cursor:cursor + game_size]
-                cursor += game_size
+                steps = pending_flat[cursor:cursor + loader_game_size]
+                cursor += loader_game_size
 
-            if len(steps) != game_size:
-                logging.warning(
-                    'trajectory step count mismatch (%s/%s), skipping game client=%s file=%s',
-                    len(steps), game_size, client_label, file_path,
+            game_size = len(steps)
+            at_kyoku = [int(s['at_kyoku']) for s in steps]
+            loader_delta = game_size - loader_game_size
+            if loader_delta != 0:
+                meta = _parse_game_key_meta(game_key)
+                logging.info(
+                    'trajectory loader size delta=%s client=%s game_key=%s '
+                    'loader_game_size=%s recorded_steps=%s '
+                    'seed=%s split=%s trainee_seat=%s file=%s',
+                    loader_delta, client_label, game_key,
+                    loader_game_size, game_size,
+                    meta['seed'], meta['split'], meta['trainee_seat'], file_path,
                 )
-                continue
 
             grp_obj = game.take_grp()
             player_id = game.take_player_id()
-            at_kyoku = game.take_at_kyoku()
             grp_feature = grp_obj.take_feature()
             rank_by_player = grp_obj.take_rank_by_player()
             final_scores = grp_obj.take_final_scores()

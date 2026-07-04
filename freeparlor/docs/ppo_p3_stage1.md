@@ -4,12 +4,63 @@
 **run dir (1回目):** `ppo_p3_aborted_20260704_040100`（step 200 SIGTERM）  
 **run dir (2回目):** `ppo_p3_aborted2_20260704_044030`（step ~3654、プール I/O スラッシング ~0.06 step/s）  
 **run dir (3回目):** `ppo_p3_aborted3_perf_gate_20260704_214600`（step 251、旧 0.2 閾値ゲート中止 → 再判定で安定確認）  
-**本走:** 2026-07-04 22:40 JST — 性能ゲート再判定 **PASS**、定常 ~0.14 step/s で発進  
-**run dir:** `/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/`  
-**tmux:** `ppo_p3_20260704_223200`  
-**完走見込み:** **~32h**（16000 step ÷ 0.139 step/s）  
+**run dir (4回目):** `ppo_p3_aborted4_20260704_225400`（~step 50、trajectory skip 大量発生 → データ整合性例外で中止）  
+**本走:** 2026-07-04 22:40 JST 発進 → **23:54 中止**（mismatch 再発）  
+**run dir:** `/home/gamba/mahjong/runs/ppo/ppo_p3_aborted4_20260704_225400/`（保全済み）  
+**次走:** 修正後・検定 (13) PASS 確認後に再発進  
 **ブランチ:** `ppo-migration`  
-**本走 GO:** 性能ゲート安定判定後 GO
+
+---
+
+## インシデント — trajectory skip 再発 (2026-07-04 23:54, 5回目)
+
+**保全 dir:** `/home/gamba/mahjong/runs/ppo/ppo_p3_aborted4_20260704_225400/`
+
+### 署名（pre-fix ログ解析）
+
+| 項目 | 値 |
+|---|---|
+| len=0 型（キー迷子） | **0** — game_key 形式は一致 |
+| 主パターン | `len(steps)=期待±k`（k∈{1,2,3}、±1 が最多） |
+| pending_had_key | skip 時 **True**（キーは存在、step 数のみ不一致） |
+
+### 分布（finalize 総数 vs skip — 損失率分母）
+
+| run | submit 回数 (3 client 計) | game slots (×5) | skip (mismatch) | 備考 |
+|---|---:|---:|---:|---|
+| aborted3 ゲート 30min | 30 | 150 | **349** | ~77% が 1 session 当たり概算 |
+| aborted4 本走 ~12min | 15 | 75 | **146** | 同上 |
+
+**偏り:** seed/split/席に有意な偏りなし（split a–d / client0–2 ほぼ均等）。
+
+### 根因
+
+1. **kan_select 未記録** — `mortal.rs` が kan フェーズを `record=false`、かつ daiminkan で `need_kan_select` 漏れ。
+2. **loader obs 数 ≠ runtime 記録数** — GameplayLoader の 4-event window と arena poll の決定境界が一致しないケースがあり、厳密 count 比較で全ゲーム skip。
+
+### 修正 (2026-07-04 23:30–24:00)
+
+| 項目 | 内容 |
+|---|---|
+| kan 記録 | kan_select を `record=true` + 独立 seq で記録 |
+| daiminkan | `need_kan_select` に `can_daiminkan` を含める |
+| at_kyoku | 記録時に `end_kyoku` 連動カウンタを step に保存 |
+| finalize | **記録 step 数を正**とし loader は grp/chip のみ。count 不一致は INFO `loader size delta`（skip しない） |
+| 拡張ログ | skip 時 game_key / expected / actual / pending / seed / split / 席 |
+| 検定 (13) | 単独 client 52 半荘自己対戦 → join **100%** assert |
+| libriichi.so | `cargo build --release -p libriichi` → `mortal/libriichi.so` 更新必須 |
+
+### 検定 (13) 結果
+
+```
+games=52 joined=52 key_missing=0 mismatch=0 orphan=0
+ALL 13 CHECKS PASSED
+```
+
+### 再発進条件
+
+- 開始報告で `trajectory step count mismatch` = **0**、`loader size delta` は INFO のみ
+- illegal_action_fallback / chip_err / NaN = 0
 
 ---
 
@@ -122,7 +173,7 @@ ALL 12 CHECKS PASSED
 
 ### 監視期待値（凍結ルール）
 
-- `trajectory step count mismatch` = **0**（step 9 時点: client0=6, client2=8 — **要監視**）
+- `trajectory step count mismatch` = **0**（修正後は loader delta を INFO のみ、skip しない）
 - `illegal_action_fallback_count` = **0**（全 client 確認済）
 - `online chip resolution failed` = **0**
 - trainer NaN = **0**

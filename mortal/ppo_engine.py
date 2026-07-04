@@ -119,7 +119,11 @@ class PPOEngine:
             use_keys = step_meta is not None and len(step_meta) == batch_size
             for i in range(batch_size):
                 if use_keys:
-                    game_id, seq, record = step_meta[i]
+                    meta = step_meta[i]
+                    game_id = meta[0]
+                    seq = meta[1]
+                    record = meta[2]
+                    at_kyoku = int(meta[3]) if len(meta) > 3 else 0
                     if not record or not game_id:
                         continue
                     self.pending_by_game.setdefault(game_id, {})[int(seq)] = {
@@ -129,6 +133,7 @@ class PPOEngine:
                         'mask': masks_cpu[i],
                         'game_id': game_id,
                         'seq': int(seq),
+                        'at_kyoku': at_kyoku,
                     }
                 else:
                     self.pending_steps.append({
