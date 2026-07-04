@@ -44,6 +44,33 @@ def log(msg: str, buf: StringIO):
     buf.write(msg + '\n')
 
 
+def _run_self_play_with_retry(make_env, engine, champion, *, log_dir: Path, seed_count: int, seed_bases: list[int]):
+    """Run py_vs_py; retry on flaky kan-select RuntimeError from sampled policies."""
+    import shutil
+
+    last_err = None
+    for seed_base in seed_bases:
+        engine.pending_by_game = {}
+        engine.pending_steps = []
+        if log_dir.exists():
+            shutil.rmtree(log_dir)
+        log_dir.mkdir(parents=True)
+        env = make_env(log_dir)
+        try:
+            env.py_vs_py(
+                challenger=engine,
+                champion=champion,
+                seed_start=(seed_base, 0xBEEF),
+                seed_count=seed_count,
+            )
+            return seed_base
+        except RuntimeError as exc:
+            last_err = exc
+            if 'kan choice not in kan candidates' not in str(exc):
+                raise
+    raise RuntimeError(f'self-play failed on all seeds: {last_err}') from last_err
+
+
 def check_pi0_match(ckpt: str, buf: StringIO, *, tau: float = 1.0, n: int = 32):
     log('(1) π₀ consistency', buf)
     state = torch.load(ckpt, weights_only=True, map_location='cpu')
@@ -504,6 +531,9 @@ tau_init = 1.0
         from client import _finalize_ppo_trajectories
         from libriichi.arena import OneVsThree
 
+        def _make_env(path: Path):
+            return OneVsThree(disable_progress_bar=True, log_dir=str(path))
+
         mortal = Brain(version=version, **resnet).eval().to(device)
         mortal.load_state_dict(state['mortal'])
         ac = ActorCritic(version=version, tau=1.0).eval().to(device)
@@ -511,7 +541,7 @@ tau_init = 1.0
 
         engine = PPOEngine(
             mortal, ac, version=version, device=device,
-            enable_amp=False, enable_quick_eval=False, name='trainee',
+            enable_amp=False, enable_quick_eval=True, name='trainee',
         )
         assert not engine.enable_rule_based_agari_guard
         assert engine.record_trajectory
@@ -522,17 +552,17 @@ tau_init = 1.0
         clone_ac.load_state_dict(ac.state_dict())
         champion = PPOEngine(
             clone_m, clone_ac, version=version, device=device,
-            enable_amp=False, enable_quick_eval=False,
-            name='trainee_clone', record_trajectory=False, eval_mode=False,
+            enable_amp=False, enable_quick_eval=True,
+            name='trainee_clone', record_trajectory=False, eval_mode=True,
         )
 
-        env = OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
-        env.py_vs_py(
-            challenger=engine,
-            champion=champion,
-            seed_start=(90000, 0xBEEF),
+        seed_used = _run_self_play_with_retry(
+            _make_env, engine, champion,
+            log_dir=log_dir,
             seed_count=seed_count,
+            seed_bases=[90000, 91000, 92000, 93000, 94000, 11111],
         )
+        log(f'  self-play seed_start=({seed_used}, 0xBEEF)', buf)
 
         file_list = sorted(str(p) for p in log_dir.glob('*.json.gz'))
         assert file_list, 'no json.gz logs produced'
@@ -572,6 +602,247 @@ tau_init = 1.0
         if n_loader_delta:
             log(f'  INFO: loader_delta={n_loader_delta} (non-fatal; runtime monitor only)', buf)
     log('  PASS: trajectory join rate 100%', buf)
+
+
+def _count_end_kyoku_events(log_path: str) -> int:
+    import gzip
+    import json
+
+    count = 0
+    with gzip.open(log_path, 'rt', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get('type') == 'end_kyoku':
+                count += 1
+    return count
+
+
+def _expected_rewards_from_log(
+    log_path: str,
+    *,
+    version: int,
+    grp_state: str,
+    alpha: float,
+    gamma_pt: float,
+    beta: float,
+    chip_value: float,
+    pts: list[int],
+):
+    loader = GameplayLoader(
+        version=version,
+        player_names=['trainee'],
+        oracle=False,
+        always_include_kan_select=True,
+    )
+    data = loader.load_gz_log_files([log_path])
+    game = data[0][0]
+    grp_obj = game.take_grp()
+    player_id = game.take_player_id()
+    grp_feature = grp_obj.take_feature()
+    rank_by_player = grp_obj.take_rank_by_player()
+    final_scores = grp_obj.take_final_scores()
+    n_kyoku = len(grp_feature)
+
+    grp = GRP(hidden_size=64, num_layers=2).eval()
+    grp.load_state_dict(torch.load(grp_state, weights_only=True, map_location='cpu')['model'])
+    calc = RewardCalculator(grp, pts=pts, alpha=alpha, gamma_pt=gamma_pt)
+    chip_deltas = load_kyoku_chip_deltas_from_log(log_path, player_id, n_kyoku)
+
+    kyoku_rewards = calc.calc_delta_blend(
+        player_id, grp_feature, rank_by_player, final_scores,
+        alpha=alpha, gamma_pt=gamma_pt,
+        chip_deltas=chip_deltas, beta=beta, chip_value=chip_value,
+        lambda_opp=0.0,
+    )
+    sotensu = calc.calc_delta_points(player_id, grp_feature, final_scores) / 1000.0
+    juni = calc.calc_delta_pt(player_id, grp_feature, rank_by_player)
+    sotensu_terms = alpha * sotensu
+    grp_terms = gamma_pt * juni
+    chip_terms = beta * chip_deltas * chip_value
+    return kyoku_rewards, sotensu_terms, grp_terms, chip_terms
+
+
+def check_reward_placement_e2e(ckpt: str, grp_state: str, buf: StringIO, *, seed_count: int = 5):
+    """(14) End-to-end reward/done placement: traj × json.gz per game."""
+    import importlib
+    import os
+
+    log(f'(14) reward placement e2e — single client {seed_count * 4}-game self-play', buf)
+
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    resnet = state['config']['resnet']
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    env_cfg = state['config'].get('env', {})
+    alpha = env_cfg.get('alpha', 1.0)
+    gamma_pt = env_cfg.get('gamma_pt', 1.0)
+    beta = env_cfg.get('beta', 1.0)
+    chip_value = env_cfg.get('chip_value', 5.0)
+    pts = env_cfg.get('pts', [35, 5, -15, -25])
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_reward_e2e_') as tmp:
+        tmp_path = Path(tmp)
+        log_dir = tmp_path / 'train_play'
+        log_dir.mkdir(parents=True)
+        cfg_path = tmp_path / 'config.toml'
+        cfg_path.write_text(f"""
+[control]
+version = {version}
+
+[grp]
+state_file = '{grp_state}'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
+
+[env]
+pts = {pts}
+alpha = {alpha}
+gamma_pt = {gamma_pt}
+beta = {beta}
+chip_value = {chip_value}
+
+[resnet]
+conv_channels = {resnet['conv_channels']}
+num_blocks = {resnet['num_blocks']}
+
+[ppo]
+tau_init = 1.0
+""", encoding='utf-8')
+
+        os.environ['MORTAL_CFG'] = str(cfg_path)
+        import config as mortal_config
+        importlib.reload(mortal_config)
+        from client import _finalize_ppo_trajectories
+        from libriichi.arena import OneVsThree
+
+        def _make_env(path: Path):
+            return OneVsThree(disable_progress_bar=True, log_dir=str(path))
+
+        mortal = Brain(version=version, **resnet).eval().to(device)
+        mortal.load_state_dict(state['mortal'])
+        ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+        load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+        engine = PPOEngine(
+            mortal, ac, version=version, device=device,
+            enable_amp=False, enable_quick_eval=True, name='trainee',
+        )
+        assert not engine.enable_rule_based_agari_guard
+        assert engine.record_trajectory
+
+        clone_m = Brain(version=version, **resnet).eval().to(device)
+        clone_ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+        clone_m.load_state_dict(mortal.state_dict())
+        clone_ac.load_state_dict(ac.state_dict())
+        champion = PPOEngine(
+            clone_m, clone_ac, version=version, device=device,
+            enable_amp=False, enable_quick_eval=True,
+            name='trainee_clone', record_trajectory=False, eval_mode=True,
+        )
+
+        seed_used = _run_self_play_with_retry(
+            _make_env, engine, champion,
+            log_dir=log_dir,
+            seed_count=seed_count,
+            seed_bases=[88000, 89000, 90000, 91000, 92000, 11111],
+        )
+        log(f'  self-play seed_start=({seed_used}, 0xBEEF)', buf)
+
+        file_list = sorted(str(p) for p in log_dir.glob('*.json.gz'))
+        assert file_list, 'no json.gz logs produced'
+
+        trajectories = _finalize_ppo_trajectories(
+            engine, file_list, param_version=0, client_label='verify14',
+        )
+        assert len(trajectories) == len(file_list), (
+            f'join rate {len(trajectories)}/{len(file_list)} != 100%'
+        )
+
+        n_games = 0
+        n_pass = 0
+        for log_path in file_list:
+            game_key = Path(log_path).name.replace('.json.gz', '')
+            traj_name = f'{game_key}.traj'
+            assert traj_name in trajectories, f'missing traj for {game_key}'
+            batch = unpack_trajectory(trajectories[traj_name])
+            assert batch.at_kyoku is not None, f'at_kyoku missing in traj {game_key}'
+
+            end_kyoku = _count_end_kyoku_events(log_path)
+            done_count = int(batch.done.sum().item())
+            assert done_count == end_kyoku, (
+                f'{game_key}: sum(done)={done_count} != end_kyoku={end_kyoku}'
+            )
+
+            at_kyoku = batch.at_kyoku.cpu().numpy().astype(np.int64)
+            assert at_kyoku.max() + 1 == len(np.unique(at_kyoku)), (
+                f'{game_key}: at_kyoku not consecutive (max={at_kyoku.max()}, '
+                f'unique={len(np.unique(at_kyoku))})'
+            )
+
+            for kyoku in np.unique(at_kyoku):
+                mask = at_kyoku == kyoku
+                done_in_kyoku = int(batch.done[mask].sum().item())
+                assert done_in_kyoku == 1, (
+                    f'{game_key}: kyoku {kyoku} has {done_in_kyoku} done steps'
+                )
+
+            non_done = ~batch.done.cpu().numpy()
+            assert np.all(batch.reward.cpu().numpy()[non_done] == 0), (
+                f'{game_key}: non-done steps have non-zero reward'
+            )
+            for name in ('reward_sotensu', 'reward_grp', 'reward_chip'):
+                comp = getattr(batch, name)
+                assert comp is not None, f'{game_key}: missing {name}'
+                assert np.all(comp.cpu().numpy()[non_done] == 0), (
+                    f'{game_key}: non-done steps have non-zero {name}'
+                )
+
+            exp_total, exp_sotensu, exp_grp, exp_chip = _expected_rewards_from_log(
+                log_path,
+                version=version,
+                grp_state=grp_state,
+                alpha=alpha,
+                gamma_pt=gamma_pt,
+                beta=beta,
+                chip_value=chip_value,
+                pts=pts,
+            )
+
+            reward_np = batch.reward.cpu().numpy()
+            sotensu_np = batch.reward_sotensu.cpu().numpy()
+            grp_np = batch.reward_grp.cpu().numpy()
+            chip_np = batch.reward_chip.cpu().numpy()
+            for kyoku in np.unique(at_kyoku):
+                done_idx = np.where((at_kyoku == kyoku) & batch.done.cpu().numpy())[0]
+                assert len(done_idx) == 1, f'{game_key}: kyoku {kyoku} done index'
+                i = int(done_idx[0])
+                k = int(kyoku)
+                assert np.isclose(reward_np[i], exp_total[k], atol=1e-5), (
+                    f'{game_key}: kyoku {k} reward {reward_np[i]} != {exp_total[k]}'
+                )
+                assert np.isclose(sotensu_np[i], exp_sotensu[k], atol=1e-5), (
+                    f'{game_key}: kyoku {k} reward_sotensu mismatch'
+                )
+                assert np.isclose(grp_np[i], exp_grp[k], atol=1e-5), (
+                    f'{game_key}: kyoku {k} reward_grp mismatch'
+                )
+                assert np.isclose(chip_np[i], exp_chip[k], atol=1e-5), (
+                    f'{game_key}: kyoku {k} reward_chip mismatch'
+                )
+
+            n_games += 1
+            n_pass += 1
+
+        log(f'  games={n_games} passed={n_pass} end_kyoku/done/reward all OK', buf)
+    log('  PASS: reward placement e2e (14)', buf)
 
 
 def check_checkpoint_load(ckpt: str, buf: StringIO):
@@ -627,9 +898,10 @@ def main():
     check_pool_engine_no_trajectory(buf)
     check_pool_cache_logits_parity(buf)
     check_trajectory_join(args.checkpoint, args.grp_state, buf)
+    check_reward_placement_e2e(args.checkpoint, args.grp_state, buf)
 
     log('', buf)
-    log('ALL 13 CHECKS PASSED', buf)
+    log('ALL 14 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0

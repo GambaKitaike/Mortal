@@ -65,11 +65,16 @@ if nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep 
 fi
 echo "port 5000 clear, GPU idle"
 
+echo "=== Pre-flight: rebuild libriichi.so ==="
+CARGO_TARGET_DIR="$REPO/target" PYO3_PYTHON="$(conda run -n mortal python -c 'import sys; print(sys.executable)')" \
+  cargo build --release -p libriichi --lib
+cp -f "$REPO/target/release/libriichi.so" "$REPO/mortal/libriichi.so"
+
 echo "=== Pre-flight: libriichi import check ==="
 PYTHONPATH="$REPO/mortal" conda run -n mortal python -c "import libriichi.arena" \
   || { echo "ERROR: libriichi.so broken — rebuild with PYO3_PYTHON=\$CONDA_PREFIX/bin/python"; exit 1; }
 
-echo "=== Pre-flight verify (checks 10/11) ==="
+echo "=== Pre-flight verify (checks 1-14) ==="
 conda run -n mortal python "$REPO/freeparlor/scripts/verify_ppo_p1.py" \
   --checkpoint /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth \
   --grp-state /home/gamba/mahjong/runs/grp.pth \

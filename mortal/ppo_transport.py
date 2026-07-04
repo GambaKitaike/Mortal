@@ -12,6 +12,7 @@ from torch import Tensor
 
 TRAJECTORY_FIELDS = ('obs', 'action', 'logp_old', 'mask', 'reward', 'done')
 REWARD_COMPONENT_FIELDS = ('reward_sotensu', 'reward_grp', 'reward_chip')
+OPTIONAL_FIELDS = ('at_kyoku',)
 
 
 @dataclass
@@ -28,6 +29,7 @@ class TrajectoryBatch:
     reward_chip: Tensor | None = None
     grp_pred_rank: Tensor | None = None
     grp_actual_rank: Tensor | None = None
+    at_kyoku: Tensor | None = None
 
     def __post_init__(self):
         n = self.obs.shape[0]
@@ -38,7 +40,7 @@ class TrajectoryBatch:
             t = getattr(self, name)
             if t is not None:
                 assert t.shape[0] == n, f'{name} batch dim mismatch'
-        for name in ('grp_pred_rank', 'grp_actual_rank'):
+        for name in ('grp_pred_rank', 'grp_actual_rank', 'at_kyoku'):
             t = getattr(self, name)
             if t is not None:
                 assert t.shape[0] == n, f'{name} batch dim mismatch'
@@ -53,7 +55,7 @@ class TrajectoryBatch:
             value = getattr(self, name)
             if value is not None:
                 payload[name] = value
-        for name in ('grp_pred_rank', 'grp_actual_rank'):
+        for name in ('grp_pred_rank', 'grp_actual_rank', 'at_kyoku'):
             value = getattr(self, name)
             if value is not None:
                 payload[name] = value
@@ -74,7 +76,7 @@ class TrajectoryBatch:
         }
         for name in REWARD_COMPONENT_FIELDS:
             kwargs[name] = d.get(name)
-        for name in ('grp_pred_rank', 'grp_actual_rank'):
+        for name in ('grp_pred_rank', 'grp_actual_rank', 'at_kyoku'):
             kwargs[name] = d.get(name)
         return cls(**kwargs)
 
@@ -117,5 +119,9 @@ def numpy_trajectory_to_batch(steps: list[dict[str, Any]], *, param_version: int
         )
         kwargs['grp_actual_rank'] = torch.as_tensor(
             [s['grp_actual_rank'] for s in steps], dtype=torch.float32,
+        )
+    if steps and 'at_kyoku' in steps[0]:
+        kwargs['at_kyoku'] = torch.as_tensor(
+            [s['at_kyoku'] for s in steps], dtype=torch.int64,
         )
     return TrajectoryBatch(**kwargs)

@@ -1,4 +1,4 @@
-PPO P1 sanity verification (re-run 2026-07-05T01:49:02+09:00)
+PPO P1 sanity verification (re-run 2026-07-05T05:20:28+09:00)
 checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
 online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 
@@ -17,7 +17,7 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 (6) legacy checkpoint load after chip head removal
   PASS: strict=False ignores chip_net; ActorCritic loads main heads
 (7) pure π sampling
-  TV distance=0.00605, illegal=0
+  TV distance=0.00240, illegal=0
   PASS: samples match softmax(masked logits), no illegal actions
 (8) online chip from log
   player_id=0 n_kyoku=8 nonzero_kyoku=3 sum=-5.0
@@ -35,8 +35,13 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
   PASS: step_000001.pth old-load ≡ resident cache (atol=1e-6)
   PASS: pool cache logits parity for 2 checkpoints
 (13) trajectory join rate — single client ~52-game self-play
-  games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=22
-  INFO: loader_delta=22 (non-fatal; runtime monitor only)
+  self-play seed_start=(90000, 0xBEEF)
+  games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=42
+  INFO: loader_delta=42 (non-fatal; runtime monitor only)
   PASS: trajectory join rate 100%
+(14) reward placement e2e — single client 20-game self-play
+  self-play seed_start=(88000, 0xBEEF)
+  games=20 passed=20 end_kyoku/done/reward all OK
+  PASS: reward placement e2e (14)
 
-ALL 13 CHECKS PASSED
+ALL 14 CHECKS PASSED
