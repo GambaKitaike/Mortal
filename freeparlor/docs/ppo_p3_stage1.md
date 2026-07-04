@@ -121,6 +121,12 @@ ALL 13 CHECKS PASSED
 | pool `.item()` ループ | `_react_batch` の per-element `.item()` をベクトル化 |
 | pool checkpoint 形式 | `step_*.pth` を weights-only 保存にしてロード軽量化 |
 
+### 改修バックログ（Stage1 完走後 — 判定窓中は凍結のため着手禁止）
+
+| 項目 | 内容 |
+|---|---|
+| `.traj` に `at_kyoku` 永続化 | `ppo_transport.TrajectoryBatch` / `numpy_trajectory_to_batch` に `at_kyoku` を追加し、drain 後も runtime 局ラベルを直接読めるようにする（§1e 循環排除検証の前提） |
+
 ### VRAM 見積り（常駐 7 組、実測 2026-07-04）
 
 | 項目 | 値 |
@@ -177,7 +183,7 @@ ALL 12 CHECKS PASSED
 | `trajectory step count mismatch` | **0** | **停止** |
 | `illegal_action_fallback_count` | **0** | **停止** |
 | `online chip resolution failed` | **0** | **停止** |
-| `loader size delta` (INFO) | 任意 | **報告のみ**（局内 obs 境界の既知特性 — 下記 §1e） |
+| `loader size delta` (INFO) | 任意 | **報告のみ**（局境界非関与のクラス未特定 delta — 下記 §1e） |
 | trainer NaN | **0** | **停止** |
 
 必須3項目 + NaN が全 **0** なら、判定窓まで**凍結**（2026-07-05 §1e 宣言）。
@@ -209,9 +215,37 @@ ALL 12 CHECKS PASSED
 | \|delta\| = 3 | **1** |
 | 整列ギャップ位置のイベント文脈（38 サイト） | **other** 100%（riichi / kan / hora / 流局 / riichi 直後に単一収束せず） |
 
-run 全体（client ログ 282 件）でも \|delta\|=1 が **75%**（±1 合計 211/282）。**局内 obs 境界の既知の癖**（GameplayLoader 4-event window vs arena kan_select 記録差、§インシデント trajectory skip 修正と同型）であり、整合性（kyoku 数・chip・join）とは独立。
+run 全体（client ログ 282 件）でも \|delta\|=1 が **75%**（±1 合計 211/282）。**局境界に非関与のクラス未特定 delta**（±1 中心、方向混在、文脈 other 100%）。GameplayLoader 4-event window vs arena kan_select 記録差（§インシデント trajectory skip 修正と同型）の候補だが単一クラスに収束せず。**判定窓で異常挙動が出た場合の調査対象として保持**。整合性（kyoku 数・chip・join）とは独立。
 
-### 3. 凍結宣言
+### 3. at_kyoku 永続化診断（2026-07-05 03:45 JST 追記）
+
+**結論: `.traj` に `at_kyoku` 非永続** — 循環排除版の基準1（記録済み `at_kyoku` 直接読み vs loader 局数）は **drain ペイロードのみでは実行不可**。
+
+| 確認 | 結果 |
+|---|---|
+| drain `.traj` スキーマ (`ppo_trajectory_v2`) | `obs`, `action`, `logp_old`, `mask`, `reward`, `done`, reward 成分, grp rank — **`at_kyoku` なし** |
+| `/tmp/loader_delta_archive` | `json.gz` のみ退避（`.traj` は drain 参照） |
+| 上記 §1 局境界 50/50 | NW 整列で loader ラベルから runtime `at_kyoku` を**推定**（loader 依存あり） |
+| `done` からの局数復元 | 不可 — packed `.traj` の `done` は局末マークだが `at_kyoku` 非保持のため独立検証にならない |
+
+**drain 生ペイロード 1件（目視）:**
+
+```
+file: 53_10089_4723950512957204642_d.traj
+game_key: 10089_4723950512957204642_d
+format: ppo_trajectory_v2
+persisted keys: action, done, format, grp_actual_rank, grp_pred_rank,
+                logp_old, mask, obs, param_version, reward,
+                reward_chip, reward_grp, reward_sotensu
+at_kyoku in payload: False
+steps: 176 / loader kyoku (grp): 9
+```
+
+**finalize 直前（buffer 経路・メモリ内）** — `ppo_engine.py` の pending step には `at_kyoku` が存在（`step_meta[3]` ← `mortal.rs` の `kyoku_counters`）。`client.py` は `at_kyoku = [int(s['at_kyoku']) for s in steps]` で参照後、`numpy_trajectory_to_batch` → `pack_trajectory` で **落ちる**。disk 上の drain `.traj` からは runtime 局ラベルを復元できない。
+
+改修は **Stage1 完走後**（上記「改修バックログ」）。判定窓中はコード凍結のため触らない。
+
+### 4. 凍結宣言
 
 | 項目 | 解析時点 @ step 559 |
 |---|---:|
@@ -221,7 +255,7 @@ run 全体（client ログ 282 件）でも \|delta\|=1 が **75%**（±1 合計
 | trainer NaN | **0** |
 | `loader size delta` (INFO) | **282**（累計 — **監視除外**） |
 
-**判定:** 必須3項目 + NaN 全 0、局境界 50/50 一致 → **loader_delta は特性既知として凍結条件から除外**。**本走は判定窓（step 8000–16000）まで凍結**（2026-07-05 03:15 JST 宣言）。
+**判定:** 必須3項目 + NaN 全 0、局境界 50/50 一致（NW 推定ベース、§3 参照）→ **loader_delta は局境界非関与のクラス未特定 delta として凍結条件から除外**。**本走は判定窓（step 8000–16000）まで凍結**（2026-07-05 03:15 JST 宣言、§3 追記 03:45 JST）。
 
 ---
 
