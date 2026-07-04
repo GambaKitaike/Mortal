@@ -35,12 +35,16 @@ def pick_actions_from_logits(
 
 
 def dump_engine_config(engine) -> dict:
+    tau = getattr(getattr(engine, 'actor_critic', None), 'tau', None)
     return {
         'name': engine.name,
         'engine_type': getattr(engine, 'engine_type', None),
+        'enable_amp': engine.enable_amp,
+        'enable_quick_eval': engine.enable_quick_eval,
         'enable_rule_based_agari_guard': engine.enable_rule_based_agari_guard,
         'eval_mode': getattr(engine, 'eval_mode', None),
         'record_trajectory': getattr(engine, 'record_trajectory', None),
+        'tau': tau,
         'has_pending_steps': hasattr(engine, 'pending_steps'),
     }
 
@@ -162,3 +166,24 @@ class PPOEngine:
         steps = self.pending_steps
         self.pending_steps = []
         return steps
+
+
+def build_production_trainee_engine(
+    brain: Brain,
+    actor_critic: ActorCritic,
+    *,
+    version,
+    device=None,
+    name: str = 'trainee',
+) -> PPOEngine:
+    """Same kwargs as mortal/client.py train-rollout PPOEngine."""
+    return PPOEngine(
+        brain,
+        actor_critic,
+        is_oracle=False,
+        version=version,
+        device=device,
+        enable_amp=True,
+        enable_quick_eval=False,
+        name=name,
+    )

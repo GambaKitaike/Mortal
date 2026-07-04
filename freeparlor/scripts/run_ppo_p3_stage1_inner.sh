@@ -74,7 +74,7 @@ echo "=== Pre-flight: libriichi import check ==="
 PYTHONPATH="$REPO/mortal" conda run -n mortal python -c "import libriichi.arena" \
   || { echo "ERROR: libriichi.so broken — rebuild with PYO3_PYTHON=\$CONDA_PREFIX/bin/python"; exit 1; }
 
-echo "=== Pre-flight verify (checks 1-14) ==="
+echo "=== Pre-flight verify (checks 1-15) ==="
 conda run -n mortal python "$REPO/freeparlor/scripts/verify_ppo_p1.py" \
   --checkpoint /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth \
   --grp-state /home/gamba/mahjong/runs/grp.pth \
@@ -159,13 +159,31 @@ start_trainer() {
     >> "$LOG_DIR/trainer.log" 2>&1
 }
 trainer_watchdog() {
-  while true; do
-    start_trainer
-    code=$?
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi
-    echo "$(date -Iseconds) trainer exited code=$code, restarting in 5s" >> "$LOG_DIR/trainer_watchdog.log"
-    sleep 5
-  done
+  (
+    set +e
+    local restarts=0
+    local window_start
+    window_start=$(date +%s)
+    while true; do
+      start_trainer
+      code=$?
+      if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi
+      now=$(date +%s)
+      if (( now - window_start >= 3600 )); then
+        window_start=$now
+        restarts=0
+      fi
+      restarts=$((restarts + 1))
+      if (( restarts > 3 )); then
+        echo "$(date -Iseconds) ERROR trainer watchdog: >3 restarts/hour, stopping run" \
+          | tee -a "$LOG_DIR/trainer_watchdog.log" "$LOG_DIR/monitor.log"
+        exit 6
+      fi
+      echo "$(date -Iseconds) trainer exited code=$code, restart $restarts/3 this hour" \
+        >> "$LOG_DIR/trainer_watchdog.log"
+      sleep 5
+    done
+  )
 }
 trainer_watchdog &
 TRAINER_WATCHDOG_PID=$!
@@ -180,19 +198,42 @@ start_client() {
 }
 client_watchdog() {
   local i=$1
-  while kill -0 "$SERVER_PID" 2>/dev/null; do
-    start_client "$i"
-    code=$?
-    if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi
-    echo "$(date -Iseconds) client${i} exited code=$code, restarting in 5s" >> "$LOG_DIR/client${i}_watchdog.log"
-    sleep 5
-  done
+  (
+    set +e
+    local restarts=0
+    local window_start
+    window_start=$(date +%s)
+    while kill -0 "$SERVER_PID" 2>/dev/null; do
+      start_client "$i"
+      code=$?
+      if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi
+      now=$(date +%s)
+      if (( now - window_start >= 3600 )); then
+        window_start=$now
+        restarts=0
+      fi
+      restarts=$((restarts + 1))
+      if (( restarts > 3 )); then
+        echo "$(date -Iseconds) ERROR client${i} watchdog: >3 restarts/hour, stopping run" \
+          | tee -a "$LOG_DIR/client${i}_watchdog.log" "$LOG_DIR/monitor.log"
+        exit 6
+      fi
+      echo "$(date -Iseconds) client${i} exited code=$code, restart $restarts/3 this hour" \
+        >> "$LOG_DIR/client${i}_watchdog.log"
+      sleep 5
+    done
+  )
 }
 for i in $(seq 0 $((NUM_CLIENTS - 1))); do
   client_watchdog "$i" &
   CLIENT_PIDS+=($!)
   sleep 3
 done
+
+count_alive_clients() {
+  ALIVE_CLIENTS=$(pgrep -fc "python /home/gamba/mahjong/runs/run_client.py" 2>/dev/null || true)
+  ALIVE_CLIENTS=${ALIVE_CLIENTS:-0}
+}
 
 echo "=== P3 Stage1 running (max_steps=$MAX_STEPS, ~19h) ==="
 echo "Config: $CFG"
@@ -208,12 +249,28 @@ count_monitor_metrics() {
 }
 
 DEADLINE=$(( $(date +%s) + 86400 ))
+ALIVE_CLIENTS=$NUM_CLIENTS
 while (( $(date +%s) < DEADLINE )); do
   steps=$(grep -oP 'ppo step \K[0-9]+' "$LOG_DIR/trainer.log" 2>/dev/null | tail -1 || true)
   steps=${steps:-0}
   count_monitor_metrics
+  count_alive_clients
   nan_err=$(grep -ciE 'non-finite|FloatingPointError' "$LOG_DIR/trainer.log" 2>/dev/null | tr -d ' ' || true)
   nan_err=${nan_err:-0}
+  if ! kill -0 "$TRAINER_WATCHDOG_PID" 2>/dev/null; then
+    echo "ERROR: trainer watchdog exited (see $LOG_DIR/trainer_watchdog.log)" | tee -a "$LOG_DIR/monitor.log"
+    exit 6
+  fi
+  for pid in "${CLIENT_PIDS[@]:-}"; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "ERROR: client watchdog pid=$pid exited (see client*_watchdog.log)" | tee -a "$LOG_DIR/monitor.log"
+      exit 6
+    fi
+  done
+  if (( ALIVE_CLIENTS < NUM_CLIENTS )); then
+    echo "ERROR: alive clients ${ALIVE_CLIENTS}/${NUM_CLIENTS}" | tee -a "$LOG_DIR/monitor.log"
+    exit 7
+  fi
   if (( MON_MISMATCH > 0 )); then
     echo "FATAL: trajectory step count mismatch=$MON_MISMATCH"
     exit 4
@@ -238,7 +295,7 @@ while (( $(date +%s) < DEADLINE )); do
     break
   fi
   sleep 60
-  echo "  steps=$steps/$MAX_STEPS monitor: mismatch=$MON_MISMATCH fallback=$MON_FALLBACK chip=$MON_CHIP loader_delta=$MON_LOADER_DELTA"
+  echo "  steps=$steps/$MAX_STEPS alive_clients=$ALIVE_CLIENTS/$NUM_CLIENTS monitor: mismatch=$MON_MISMATCH fallback=$MON_FALLBACK chip=$MON_CHIP loader_delta=$MON_LOADER_DELTA"
 done
 
 echo "=== Final log tail ==="

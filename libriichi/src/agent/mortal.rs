@@ -265,7 +265,7 @@ impl BatchAgent for MortalBatchAgent {
             }
         }
 
-        let need_kan_select = if !(cans.can_ankan || cans.can_kakan || cans.can_daiminkan) {
+        let need_kan_select = if !(cans.can_ankan || cans.can_kakan) {
             false
         } else if !self.enable_quick_eval {
             true

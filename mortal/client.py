@@ -234,16 +234,12 @@ def main():
         logging.info(f'param has been updated (beta_sel={beta_sel}, ppo={use_ppo})')
 
         if use_ppo:
-            from ppo_engine import PPOEngine, dump_engine_config
-            engine = PPOEngine(
+            from ppo_engine import build_production_trainee_engine, dump_engine_config
+            engine = build_production_trainee_engine(
                 mortal,
                 head,
-                is_oracle=False,
                 version=version,
                 device=device,
-                enable_amp=True,
-                enable_quick_eval=False,
-                name='trainee',
             )
             trainee_cfg = dump_engine_config(engine)
             logging.info(f'trainee engine config dump: {trainee_cfg}')

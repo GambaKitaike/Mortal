@@ -29,7 +29,12 @@ from model import (
     load_ppo_from_mortal_checkpoint,
 )
 from ppo import compose_kyoku_reward, compute_gae, masked_softmax, action_log_probs
-from ppo_engine import PPOEngine, dump_engine_config
+from ppo_engine import (
+    PPOEngine,
+    build_production_trainee_engine,
+    dump_engine_config,
+    pick_actions_from_logits,
+)
 from ppo_dataloader import assign_rewards_and_dones, recompute_logp_old
 from ppo_transport import TrajectoryBatch, pack_trajectory, unpack_trajectory
 from reward_calculator import RewardCalculator
@@ -374,15 +379,16 @@ def check_train_engine_config(ckpt: str, buf: StringIO):
     ac = ActorCritic(version=version, tau=1.0).eval()
     load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
 
-    engine = PPOEngine(
+    engine = build_production_trainee_engine(
         mortal, ac, version=version, device=device,
-        enable_amp=True, enable_quick_eval=False, name='trainee',
     )
     dumped = dump_engine_config(engine)
     log(f'  trainee dump: {dumped}', buf)
     assert not engine.enable_rule_based_agari_guard
     assert not engine.eval_mode
     assert engine.record_trajectory
+    assert not engine.enable_quick_eval
+    assert engine.enable_amp
     log('  PASS: trainee guard=False eval_mode=False record_trajectory=True', buf)
 
 
@@ -481,6 +487,33 @@ def check_pool_cache_logits_parity(buf: StringIO):
     log('  PASS: pool cache logits parity for 2 checkpoints', buf)
 
 
+def _build_verify_selfplay_engines(state: dict, device: torch.device):
+    """Production trainee + eval clone (same builders as client.py / test_play)."""
+    version = state['config']['control']['version']
+    resnet = state['config']['resnet']
+
+    mortal = Brain(version=version, **resnet).eval().to(device)
+    mortal.load_state_dict(state['mortal'])
+    ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+    load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+    engine = build_production_trainee_engine(
+        mortal, ac, version=version, device=device,
+    )
+    ref_dump = dump_engine_config(engine)
+
+    clone_m = Brain(version=version, **resnet).eval().to(device)
+    clone_ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+    clone_m.load_state_dict(mortal.state_dict())
+    clone_ac.load_state_dict(ac.state_dict())
+    champion = PPOEngine(
+        clone_m, clone_ac, version=version, device=device,
+        enable_amp=True, enable_quick_eval=False,
+        name='trainee_clone', record_trajectory=False, eval_mode=True,
+    )
+    return engine, champion, ref_dump
+
+
 def check_trajectory_join(ckpt: str, grp_state: str, buf: StringIO, *, seed_count: int = 13):
     """(13) Single-client self-play: every log file must join a trajectory (100%)."""
     import importlib
@@ -534,27 +567,11 @@ tau_init = 1.0
         def _make_env(path: Path):
             return OneVsThree(disable_progress_bar=True, log_dir=str(path))
 
-        mortal = Brain(version=version, **resnet).eval().to(device)
-        mortal.load_state_dict(state['mortal'])
-        ac = ActorCritic(version=version, tau=1.0).eval().to(device)
-        load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
-
-        engine = PPOEngine(
-            mortal, ac, version=version, device=device,
-            enable_amp=False, enable_quick_eval=True, name='trainee',
-        )
+        engine, champion, ref_dump = _build_verify_selfplay_engines(state, device)
+        assert dump_engine_config(engine) == ref_dump, 'trainee config drift in (13)'
+        log(f'  trainee config dump diff=empty: {ref_dump}', buf)
         assert not engine.enable_rule_based_agari_guard
         assert engine.record_trajectory
-
-        clone_m = Brain(version=version, **resnet).eval().to(device)
-        clone_ac = ActorCritic(version=version, tau=1.0).eval().to(device)
-        clone_m.load_state_dict(mortal.state_dict())
-        clone_ac.load_state_dict(ac.state_dict())
-        champion = PPOEngine(
-            clone_m, clone_ac, version=version, device=device,
-            enable_amp=False, enable_quick_eval=True,
-            name='trainee_clone', record_trajectory=False, eval_mode=True,
-        )
 
         seed_used = _run_self_play_with_retry(
             _make_env, engine, champion,
@@ -726,27 +743,11 @@ tau_init = 1.0
         def _make_env(path: Path):
             return OneVsThree(disable_progress_bar=True, log_dir=str(path))
 
-        mortal = Brain(version=version, **resnet).eval().to(device)
-        mortal.load_state_dict(state['mortal'])
-        ac = ActorCritic(version=version, tau=1.0).eval().to(device)
-        load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
-
-        engine = PPOEngine(
-            mortal, ac, version=version, device=device,
-            enable_amp=False, enable_quick_eval=True, name='trainee',
-        )
+        engine, champion, ref_dump = _build_verify_selfplay_engines(state, device)
+        assert dump_engine_config(engine) == ref_dump, 'trainee config drift in (14)'
+        log(f'  trainee config dump diff=empty: {ref_dump}', buf)
         assert not engine.enable_rule_based_agari_guard
         assert engine.record_trajectory
-
-        clone_m = Brain(version=version, **resnet).eval().to(device)
-        clone_ac = ActorCritic(version=version, tau=1.0).eval().to(device)
-        clone_m.load_state_dict(mortal.state_dict())
-        clone_ac.load_state_dict(ac.state_dict())
-        champion = PPOEngine(
-            clone_m, clone_ac, version=version, device=device,
-            enable_amp=False, enable_quick_eval=True,
-            name='trainee_clone', record_trajectory=False, eval_mode=True,
-        )
 
         seed_used = _run_self_play_with_retry(
             _make_env, engine, champion,
@@ -845,6 +846,175 @@ tau_init = 1.0
     log('  PASS: reward placement e2e (14)', buf)
 
 
+# Deterministic seed: trainee (split a) gets daiminkan opportunity in 1 hanchan.
+DAIMINKAN_VERIFY_SEED = 1
+
+
+class _DaiminkanForcingEngine(PPOEngine):
+    """Stub: force action 42 when legal to exercise daiminkan direct path."""
+
+    def _pick_actions(self, logits: torch.Tensor, masks_t: torch.Tensor, *, eval_mode: bool):
+        actions, fallback = pick_actions_from_logits(logits, masks_t, eval_mode=eval_mode)
+        for i in range(masks_t.shape[0]):
+            if masks_t[i, 42]:
+                actions[i] = 42
+                self.daiminkan_forced = True
+        self.illegal_action_fallback_count += fallback
+        return actions
+
+
+def _count_trainee_daiminkan(log_path: str, trainee_seat: int) -> int:
+    import gzip
+    import json
+
+    count = 0
+    with gzip.open(log_path, 'rt', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get('type') == 'daiminkan' and ev.get('actor') == trainee_seat:
+                count += 1
+    return count
+
+
+def check_daiminkan_direct_path(ckpt: str, grp_state: str, buf: StringIO):
+    """(15) Deterministic daiminkan: no kan_select phase, action 42 direct execution."""
+    import importlib
+    import os
+
+    log(
+        f'(15) daiminkan direct path — seed=({DAIMINKAN_VERIFY_SEED}, 0xBEEF) '
+        'action-42 stub',
+        buf,
+    )
+
+    state = torch.load(ckpt, weights_only=True, map_location='cpu')
+    version = state['config']['control']['version']
+    resnet = state['config']['resnet']
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_daiminkan_') as tmp:
+        tmp_path = Path(tmp)
+        log_dir = tmp_path / 'train_play'
+        log_dir.mkdir(parents=True)
+        cfg_path = tmp_path / 'config.toml'
+        cfg_path.write_text(f"""
+[control]
+version = {version}
+
+[grp]
+state_file = '{grp_state}'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
+
+[env]
+pts = [35, 5, -15, -25]
+alpha = 1.0
+gamma_pt = 1.0
+beta = 1.0
+chip_value = 5.0
+
+[resnet]
+conv_channels = {resnet['conv_channels']}
+num_blocks = {resnet['num_blocks']}
+
+[ppo]
+tau_init = 1.0
+""", encoding='utf-8')
+
+        os.environ['MORTAL_CFG'] = str(cfg_path)
+        import config as mortal_config
+        importlib.reload(mortal_config)
+        from client import _finalize_ppo_trajectories
+        from libriichi.arena import OneVsThree
+
+        mortal = Brain(version=version, **resnet).eval().to(device)
+        mortal.load_state_dict(state['mortal'])
+        ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+        load_actor_critic_from_dqn_checkpoint(ac, state['current_dqn'], version=version)
+
+        engine = _DaiminkanForcingEngine(
+            mortal,
+            ac,
+            is_oracle=False,
+            version=version,
+            device=device,
+            enable_amp=True,
+            enable_quick_eval=False,
+            name='trainee',
+        )
+        engine.daiminkan_forced = False
+        prod_dump = dump_engine_config(
+            build_production_trainee_engine(mortal, ac, version=version, device=device),
+        )
+        assert dump_engine_config(engine) == prod_dump, 'stub engine config drift from production'
+        log(f'  trainee config dump diff=empty: {prod_dump}', buf)
+
+        clone_m = Brain(version=version, **resnet).eval().to(device)
+        clone_ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+        clone_m.load_state_dict(mortal.state_dict())
+        clone_ac.load_state_dict(ac.state_dict())
+        champion = PPOEngine(
+            clone_m, clone_ac, version=version, device=device,
+            enable_amp=True, enable_quick_eval=False,
+            name='trainee_clone', record_trajectory=False, eval_mode=True,
+        )
+
+        env = OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
+        env.py_vs_py(
+            challenger=engine,
+            champion=champion,
+            seed_start=(DAIMINKAN_VERIFY_SEED, 0xBEEF),
+            seed_count=1,
+        )
+
+        assert engine.daiminkan_forced, 'stub never saw legal action 42 (daiminkan mask)'
+        log('  stub forced action 42 at least once', buf)
+
+        file_list = sorted(str(p) for p in log_dir.glob('*.json.gz'))
+        assert file_list, 'no json.gz logs produced'
+
+        daiminkan_logs = []
+        for log_path in file_list:
+            game_key = Path(log_path).name.replace('.json.gz', '')
+            split = game_key.rsplit('_', 1)[-1]
+            trainee_seat = {'a': 0, 'b': 1, 'c': 2, 'd': 3}.get(split)
+            assert trainee_seat is not None, f'unknown split in {game_key}'
+            n_daiminkan = _count_trainee_daiminkan(log_path, trainee_seat)
+            if n_daiminkan >= 1:
+                daiminkan_logs.append((log_path, game_key, trainee_seat, n_daiminkan))
+
+        assert daiminkan_logs, 'no game with trainee daiminkan in 4-split set'
+        log_path, game_key, trainee_seat, n_daiminkan = daiminkan_logs[0]
+        log(
+            f'  daiminkan game={game_key} count={n_daiminkan} trainee_seat={trainee_seat}',
+            buf,
+        )
+
+        trajectories = _finalize_ppo_trajectories(
+            engine, file_list, param_version=0, client_label='verify15',
+        )
+        assert len(trajectories) == len(file_list), (
+            f'trajectory join {len(trajectories)}/{len(file_list)} != 100%'
+        )
+
+        traj_name = f'{game_key}.traj'
+        assert traj_name in trajectories, f'missing traj for daiminkan game {game_key}'
+        batch = unpack_trajectory(trajectories[traj_name])
+        actions_np = batch.action.cpu().numpy()
+        assert (actions_np == 42).any(), 'trajectory lacks action 42 (daiminkan)'
+        log(f'  trajectory_steps={len(actions_np)} action42_present=True', buf)
+
+    log('  PASS: daiminkan direct path (15)', buf)
+
+
 def check_checkpoint_load(ckpt: str, buf: StringIO):
     log('(6) legacy checkpoint load after chip head removal', buf)
     state = torch.load(ckpt, weights_only=True, map_location='cpu')
@@ -899,9 +1069,10 @@ def main():
     check_pool_cache_logits_parity(buf)
     check_trajectory_join(args.checkpoint, args.grp_state, buf)
     check_reward_placement_e2e(args.checkpoint, args.grp_state, buf)
+    check_daiminkan_direct_path(args.checkpoint, args.grp_state, buf)
 
     log('', buf)
-    log('ALL 14 CHECKS PASSED', buf)
+    log('ALL 15 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0

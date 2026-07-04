@@ -6,7 +6,8 @@
 **run dir (3回目):** `ppo_p3_aborted3_perf_gate_20260704_214600`（step 251、旧 0.2 閾値ゲート中止 → 再判定で安定確認）  
 **run dir (4回目):** `ppo_p3_aborted4_20260704_225400`（~step 50、trajectory skip 大量発生 → データ整合性例外で中止）  
 **run dir (5回目):** `ppo_p3_aborted5_20260705_043200`（step ~1400、`sum(done)=1` 系統不一致 → 中止）  
-**run dir (6回目):** `stage1_20260705_053301`（**本走 GO** — 2026-07-05 06:29 JST 発進、at_kyoku 修正後）  
+**run dir (6回目):** `ppo_p3_aborted6_20260705_053301`（step 40、client 欠員で停滞 → daiminkan 経路修正後に中止）  
+**run dir (7回目):** `stage1_20260705_072900`（**本走 GO** — daiminkan リバート + watchdog + verify 本番一致化後）  
 **run dir (5回目・初回):** `stage1_20260705_014852`（step 520 まで進行後、monitor grep pipefail で誤停止 → 修正再発進）  
 **ブランチ:** `ppo-migration`  
 
@@ -43,7 +44,7 @@
 | 項目 | 内容 |
 |---|---|
 | kan 記録 | kan_select を `record=true` + 独立 seq で記録 |
-| daiminkan | `need_kan_select` に `can_daiminkan` を含める |
+| daiminkan | ~~`need_kan_select` に `can_daiminkan` を含める~~ → **2026-07-05 リバート**（下記 §daiminkan 根拠） |
 | at_kyoku | 記録時に `end_kyoku` 連動カウンタを step に保存 |
 | finalize | **記録 step 数を正**とし loader は grp/chip のみ。count 不一致は INFO `loader size delta`（skip しない） |
 | 拡張ログ | skip 時 game_key / expected / actual / pending / seed / split / 席 |
@@ -367,7 +368,73 @@ for idx in &self.indexes {
 
 ---
 
-## 1e. 開始報告 (6回目 — 2026-07-05 06:29 JST)
+## daiminkan / kan_select 根拠 (2026-07-05, run #6→#7)
+
+### 問題
+
+run #6 step 40 で client 全滅。調査の過程で `need_kan_select` への `can_daiminkan` 追加（c08271f）が
+daiminkan-only 局面で **kan_select フェーズ + action 42 の二段記録**を生み、loader との差分・経路複雑化の温床になっていた。
+
+### リバート方針
+
+| 項目 | 内容 |
+|---|---|
+| `need_kan_select` | `can_ankan \|\| can_kakan` のみ（c08271f 以前に復帰）。daiminkan-only は kan_select に入らない |
+| daiminkan 実行 | action 42 が `kan_select_idx=None` で直接 `Event::Daiminkan`（本家経路、`mortal.rs` L549–570） |
+| kan_select の daiminkan | GameplayLoader 側は選択肢1の**空判断**用。実判断（主反応 step）は runtime 記録済み |
+| loader カウント | runtime 正典化により厳密一致は不要。差分は INFO `loader size delta` のみ |
+| ankan/kakan 記録 | c08271f 本体（`record=true` + 独立 seq）は**維持** |
+
+### 検定・監視の追加 (run #7)
+
+| 項目 | 内容 |
+|---|---|
+| 検定 (13)(14) | `build_production_trainee_engine()` 経由（`enable_quick_eval=False` 等本番同一）、dump diff==空 assert |
+| 検定 (15) | seed=(1,0xBEEF) + action-42 stub で daiminkan 直接経路を**必ず**踏む |
+| watchdog | サブシェル `set +e` 隔離、client/trainer 各 3 回/時超過で run 停止 + `monitor.log` |
+| 凍結条件 | **step 100 到達 + 必須3項目 0 + alive clients 3/3** |
+
+---
+
+## 1f. 開始報告 (7回目 — 2026-07-05 07:40 JST)
+
+### 中止 (run #6)
+
+| 項目 | 値 |
+|---|---|
+| 保全 dir | `/home/gamba/mahjong/runs/ppo/ppo_p3_aborted6_20260705_053301/` |
+| 到達 step | **40**（client 欠員停滞、実害なし） |
+
+### 開始 (run #7)
+
+| 項目 | 値 |
+|---|---|
+| 開始時刻 | **2026-07-05 07:40:47 JST**（trainer init） |
+| tmux | `ppo_p3_20260705_072900` |
+| run dir | `/home/gamba/mahjong/runs/ppo/stage1_20260705_072900/` |
+
+### 検定 (15) — pre-flight ログ
+
+```
+(13) games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=27
+(14) games=20 passed=20 end_kyoku/done/reward all OK
+(15) daiminkan game=1_48879_b action42_present=True
+ALL 15 CHECKS PASSED
+```
+
+### 凍結条件（改訂）
+
+**step 100 到達 + 必須3項目 0 + alive clients 3/3** の3点セット。
+
+| 項目 | 閾値 |
+|---|---|
+| `trajectory step count mismatch` | 0（停止） |
+| `illegal_action_fallback_count` | 0（停止） |
+| `online chip resolution failed` | 0（停止） |
+| `alive clients` | **3/3**（欠員で停止） |
+| `loader size delta` | INFO のみ（非致命） |
+
+---
 
 ### 開始
 
