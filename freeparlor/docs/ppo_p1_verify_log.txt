@@ -1,4 +1,4 @@
-PPO P1 sanity verification (re-run 2026-07-04T21:45:27+09:00)
+PPO P1 sanity verification (re-run 2026-07-04T22:30:33+09:00)
 checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
 online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 
@@ -17,7 +17,7 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 (6) legacy checkpoint load after chip head removal
   PASS: strict=False ignores chip_net; ActorCritic loads main heads
 (7) pure π sampling
-  TV distance=0.00168, illegal=0
+  TV distance=0.00237, illegal=0
   PASS: samples match softmax(masked logits), no illegal actions
 (8) online chip from log
   player_id=0 n_kyoku=8 nonzero_kyoku=3 sum=-5.0

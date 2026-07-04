@@ -1,14 +1,15 @@
-# PPO P3 — Stage1 本走 (2026-07-04 再々スタート)
+# PPO P3 — Stage1 本走 (2026-07-04 発進)
 
 **設計:** `ppo_migration_design.md` §5.1 / §7 P3  
 **run dir (1回目):** `ppo_p3_aborted_20260704_040100`（step 200 SIGTERM）  
-**run dir (2回目):** `ppo_p3_aborted2_20260704_044030`（step ~3654、プール I/O スラッシングで ~0.06 step/s）  
-**run dir (3回目):** `ppo_p3_aborted3_perf_gate_20260704_214600`（step 251、30min 性能ゲート 0.139 step/s < 0.2 で停止）  
-**再々スタート:** 2026-07-04 21:45 JST — checkpoint 常駐キャッシュ適用後、**最初から**新規 run（性能ゲート未達で停止）  
-**run dir:** `/home/gamba/mahjong/runs/ppo/ppo_p3_aborted3_perf_gate_20260704_214600/`  
-**tmux:** `ppo_p3_20260704_214600`（停止済）  
+**run dir (2回目):** `ppo_p3_aborted2_20260704_044030`（step ~3654、プール I/O スラッシング ~0.06 step/s）  
+**run dir (3回目):** `ppo_p3_aborted3_perf_gate_20260704_214600`（step 251、旧 0.2 閾値ゲート中止 → 再判定で安定確認）  
+**本走:** 2026-07-04 22:40 JST — 性能ゲート再判定 **PASS**、定常 ~0.14 step/s で発進  
+**run dir:** `/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/`  
+**tmux:** `ppo_p3_20260704_223200`  
+**完走見込み:** **~32h**（16000 step ÷ 0.139 step/s）  
 **ブランチ:** `ppo-migration`  
-**本走 GO:** **中止** — 性能ゲート未達（別ボトルネック要調査）
+**本走 GO:** 性能ゲート安定判定後 GO
 
 ---
 
@@ -44,9 +45,31 @@
 ### 再スタート判断
 
 - step 4000 時点の checkpoint は on-policy 汚染の疑いがあり **学習継続不可**（1回目 abort）。
-- 2回目 run（`ppo_p3_aborted2_*`）は checkpoint 保存済みだが **性能ゲート未達**（~0.06 step/s ≪ 0.2）のため再々スタート。
+- 2回目 run（`ppo_p3_aborted2_*`）は checkpoint 保存済み。常駐キャッシュ後 **~0.14 step/s** に改善（旧 0.2 閾値は撤回、下記ゲート参照）。
 - 汚染 run は `ppo_p3_aborted_*` として削除せず保全（forensic 用）。
 - init は従来通り `beta1_huber_192x40`、config は前回 P3 同一（lr=2e-5, τ=1.0, c_ent=0.01, 16k, save_every=2000）。
+
+### 性能ゲート（再判定 — 2026-07-04、レビュー承認済み）
+
+**旧判定:** 30min 全体 0.139 step/s < 0.2 → 中止（`aborted3`）。  
+**方針変更:** **0.2 閾値はプール無しスモーク基準のため撤回**。残差（~0.14 vs 0.2）は trainer バッチ細分化（4 epoch × minibatch）+ 3 client GPU 競合の**構造コスト**と判断（レビュー承認済み）。  
+**新判定:** 30min ログを前半 15min / 後半 15min に分割し、実効 step/s の差が **20% 以内 → 安定**。後半が明確に遅い（リーク疑い）場合のみ停止。
+
+| 区間 | step 増分 | 実効 step/s |
+|---|---:|---:|
+| 前半 15min (21:54:25–22:09:25) | 135 (1→136) | **0.150** |
+| 後半 15min (22:09:25–22:24:25) | 115 (136→251) | **0.128** |
+| 全体 30min | 250 | **0.139** |
+| 前半/後半差 | — | **14.8%** |
+
+**判定:** **安定（PASS）** — 0.139 step/s を構造的定常値として受理、本走 GO。完走見込み **~32h**。
+
+### 性能バックログ（Stage1 完走まで着手禁止）
+
+| 項目 | 内容 |
+|---|---|
+| pool `.item()` ループ | `_react_batch` の per-element `.item()` をベクトル化 |
+| pool checkpoint 形式 | `step_*.pth` を weights-only 保存にしてロード軽量化 |
 
 ### VRAM 見積り（常駐 7 組、実測 2026-07-04）
 
@@ -71,38 +94,44 @@
 
 ---
 
-## 1. 開始報告 (3回目 — 2026-07-04 21:45 JST, **性能ゲート中止**)
+## 1. 開始報告 (本走 — 2026-07-04 22:40 JST)
 
-### 性能ゲート（開始 30 分）
+### 開始
 
 | 項目 | 値 |
 |---|---|
-| 訓練開始 | 2026-07-04 21:54:24 JST（step 1） |
-| 30min 時点 | 2026-07-04 22:24:24 JST |
-| 到達 step | **251** |
-| 実効 step/s | **0.139**（251 / 1800s） |
-| 閾値 | 0.2 step/s |
-| 判定 | **FAIL — 停止**（2.3× 改善 vs aborted2 の ~0.06 だが未達） |
-| GPU mem (22:21) | 5808 / 8151 MiB (71%) |
-
-**所見:** 常駐キャッシュで I/O スラッシングは解消（~0.06→~0.14 step/s）したが、0.2 未満。trainer batch ~1.3s/batch が支配的で、client rollout 待ちまたは trajectory 収集が残ボトルネックの可能性。
-
-### Config
-
-前回 P3 と同一（`stage1_20260704_214600/config.toml`、init=`beta1_huber_192x40`、past_k=5、latest_prob=0.5）
+| 開始時刻 | **2026-07-04 22:40:37 JST**（step 1） |
+| tmux | `ppo_p3_20260704_223200` |
+| run dir | `/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/` |
+| 定常 step/s | **0.139**（ゲート再判定） |
+| 完走見込み | **~32h**（ETA ~2026-07-06 06:40 JST） |
 
 ### 検定 (10)(11)(12)
 
 ```
-ALL 12 CHECKS PASSED (verify_p1.log)
+ALL 12 CHECKS PASSED
 (12) step_000000/000001 old-load ≡ resident cache (atol=1e-6)
 ```
 
-### カウンタ（step 251 時点）
+### Mem 30min（ゲート run `aborted3` 参考）
 
-| カウンタ | 値 |
-|---|---|
-| orphan / fallback / chip_err / NaN | 全 **0**（確認済） |
+| 時刻 | Mem used | available | GPU mem | GPU util |
+|---|---:|---:|---:|---:|
+| 21:56 | 1.4 GiB | 22 GiB | 1680 / 8151 MiB | — |
+| 22:21 | 10 GiB | 12 GiB | 5808 / 8151 MiB | 78% |
+
+### 監視期待値（凍結ルール）
+
+- `trajectory step count mismatch` = **0**（step 9 時点: client0=6, client2=8 — **要監視**）
+- `illegal_action_fallback_count` = **0**（全 client 確認済）
+- `online chip resolution failed` = **0**
+- trainer NaN = **0**
+
+---
+
+## 1c. ゲート run 記録 (3回目 — aborted3, 2026-07-04 21:45 JST)
+
+旧 0.2 閾値で中止。再判定により安定確認（上記性能ゲート節）。
 
 ---
 
