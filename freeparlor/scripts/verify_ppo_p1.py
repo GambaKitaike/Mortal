@@ -537,13 +537,13 @@ tau_init = 1.0
         file_list = sorted(str(p) for p in log_dir.glob('*.json.gz'))
         assert file_list, 'no json.gz logs produced'
 
-        warnings = []
+        log_messages = []
         handler = logging.Handler()
-        handler.emit = lambda rec: warnings.append(rec.getMessage())
+        handler.emit = lambda rec: log_messages.append(rec.getMessage())
         root = logging.getLogger()
         old_level = root.level
         root.addHandler(handler)
-        root.setLevel(logging.WARNING)
+        root.setLevel(logging.INFO)
         try:
             trajectories = _finalize_ppo_trajectories(
                 engine, file_list, param_version=0, client_label='verify13',
@@ -554,19 +554,23 @@ tau_init = 1.0
 
         n_games = len(file_list)
         n_joined = len(trajectories)
-        n_key_missing = sum(1 for w in warnings if 'game key missing' in w)
-        n_mismatch = sum(1 for w in warnings if 'step count mismatch' in w)
-        n_orphan = sum(1 for w in warnings if 'trajectory orphan' in w)
+        n_key_missing = sum(1 for w in log_messages if 'game key missing' in w)
+        n_mismatch = sum(1 for w in log_messages if 'step count mismatch' in w)
+        n_orphan = sum(1 for w in log_messages if 'trajectory orphan' in w)
+        n_loader_delta = sum(1 for w in log_messages if 'loader size delta' in w)
 
         log(
             f'  games={n_games} joined={n_joined} '
-            f'key_missing={n_key_missing} mismatch={n_mismatch} orphan={n_orphan}',
+            f'key_missing={n_key_missing} mismatch={n_mismatch} '
+            f'orphan={n_orphan} loader_delta={n_loader_delta}',
             buf,
         )
-        assert n_key_missing == 0, f'key missing: {n_key_missing}'
-        assert n_mismatch == 0, f'mismatch: {n_mismatch}'
-        assert n_orphan == 0, f'orphan: {n_orphan}'
         assert n_joined == n_games, f'join rate {n_joined}/{n_games} != 100%'
+        assert n_key_missing == 0, f'key_missing={n_key_missing} (expected 0)'
+        assert n_mismatch == 0, f'mismatch={n_mismatch} (expected 0)'
+        assert n_orphan == 0, f'orphan={n_orphan} (expected 0)'
+        if n_loader_delta:
+            log(f'  INFO: loader_delta={n_loader_delta} (non-fatal; runtime monitor only)', buf)
     log('  PASS: trajectory join rate 100%', buf)
 
 

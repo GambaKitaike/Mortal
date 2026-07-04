@@ -191,17 +191,38 @@ done
 
 echo "=== P3 Stage1 running (max_steps=$MAX_STEPS, ~19h) ==="
 echo "Config: $CFG"
+count_monitor_metrics() {
+  MON_MISMATCH=$(grep -h 'trajectory step count mismatch' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  MON_MISMATCH=${MON_MISMATCH:-0}
+  MON_FALLBACK=$(grep -hE 'illegal_action_fallback_count=[1-9]' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  MON_FALLBACK=${MON_FALLBACK:-0}
+  MON_CHIP=$(grep -h 'online chip resolution failed' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  MON_CHIP=${MON_CHIP:-0}
+  MON_LOADER_DELTA=$(grep -h 'trajectory loader size delta' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  MON_LOADER_DELTA=${MON_LOADER_DELTA:-0}
+}
+
 DEADLINE=$(( $(date +%s) + 86400 ))
 while (( $(date +%s) < DEADLINE )); do
   steps=$(grep -oP 'ppo step \K[0-9]+' "$LOG_DIR/trainer.log" 2>/dev/null | tail -1 || true)
   steps=${steps:-0}
-  chip_err=$(grep -h 'online chip resolution failed' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
-  chip_err=${chip_err:-0}
+  count_monitor_metrics
   nan_err=$(grep -ciE 'non-finite|FloatingPointError' "$LOG_DIR/trainer.log" 2>/dev/null | tr -d ' ' || true)
   nan_err=${nan_err:-0}
-  if (( chip_err > 0 )); then
-    echo "FATAL: chip resolution errors=$chip_err"
+  if (( MON_MISMATCH > 0 )); then
+    echo "FATAL: trajectory step count mismatch=$MON_MISMATCH"
+    exit 4
+  fi
+  if (( MON_FALLBACK > 0 )); then
+    echo "FATAL: illegal_action_fallback_count non-zero sessions=$MON_FALLBACK"
+    exit 5
+  fi
+  if (( MON_CHIP > 0 )); then
+    echo "FATAL: chip resolution errors=$MON_CHIP"
     exit 2
+  fi
+  if (( MON_LOADER_DELTA > 0 )); then
+    echo "NOTICE: loader size delta (INFO) count=$MON_LOADER_DELTA (non-fatal early signal)"
   fi
   if (( nan_err > 0 )); then
     echo "FATAL: NaN detected"
@@ -212,11 +233,14 @@ while (( $(date +%s) < DEADLINE )); do
     break
   fi
   sleep 60
-  echo "  steps=$steps/$MAX_STEPS"
+  echo "  steps=$steps/$MAX_STEPS monitor: mismatch=$MON_MISMATCH fallback=$MON_FALLBACK chip=$MON_CHIP loader_delta=$MON_LOADER_DELTA"
 done
 
 echo "=== Final log tail ==="
 grep 'ppo step' "$LOG_DIR/trainer.log" | tail -5 || true
-echo "mismatch: $(grep -h 'trajectory step count mismatch' "$LOG_DIR"/client*.log 2>/dev/null | wc -l)"
-echo "chip errors: $(grep -h 'online chip resolution failed' "$LOG_DIR"/client*.log 2>/dev/null | wc -l)"
+count_monitor_metrics
+echo "mismatch: $MON_MISMATCH"
+echo "fallback: $MON_FALLBACK"
+echo "loader_delta: $MON_LOADER_DELTA"
+echo "chip errors: $MON_CHIP"
 echo "=== Done (eval at checkpoints: run_eval separately) ==="

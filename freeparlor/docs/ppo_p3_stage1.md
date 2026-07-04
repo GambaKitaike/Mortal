@@ -5,9 +5,8 @@
 **run dir (2回目):** `ppo_p3_aborted2_20260704_044030`（step ~3654、プール I/O スラッシング ~0.06 step/s）  
 **run dir (3回目):** `ppo_p3_aborted3_perf_gate_20260704_214600`（step 251、旧 0.2 閾値ゲート中止 → 再判定で安定確認）  
 **run dir (4回目):** `ppo_p3_aborted4_20260704_225400`（~step 50、trajectory skip 大量発生 → データ整合性例外で中止）  
-**本走:** 2026-07-04 22:40 JST 発進 → **23:54 中止**（mismatch 再発）  
-**run dir:** `/home/gamba/mahjong/runs/ppo/ppo_p3_aborted4_20260704_225400/`（保全済み）  
-**次走:** 修正後・検定 (13) PASS 確認後に再発進  
+**run dir (5回目):** `stage1_20260705_023140`（**本走 GO** — 2026-07-05 02:31 JST 発進）  
+**run dir (5回目・初回):** `stage1_20260705_014852`（step 520 まで進行後、monitor grep pipefail で誤停止 → 修正再発進）  
 **ブランチ:** `ppo-migration`  
 
 ---
@@ -171,12 +170,59 @@ ALL 12 CHECKS PASSED
 | 21:56 | 1.4 GiB | 22 GiB | 1680 / 8151 MiB | — |
 | 22:21 | 10 GiB | 12 GiB | 5808 / 8151 MiB | 78% |
 
-### 監視期待値（凍結ルール）
+### 監視期待値（凍結ルール — 4項目 + NaN）
 
-- `trajectory step count mismatch` = **0**（修正後は loader delta を INFO のみ、skip しない）
-- `illegal_action_fallback_count` = **0**（全 client 確認済）
-- `online chip resolution failed` = **0**
-- trainer NaN = **0**
+| 項目 | 期待 | 非ゼロ時 |
+|---|---|---|
+| `trajectory step count mismatch` | **0** | **停止** |
+| `illegal_action_fallback_count` | **0** | **停止** |
+| `online chip resolution failed` | **0** | **停止** |
+| `loader size delta` (INFO) | **0** | **報告のみ**（記録漏れ新種の早期シグナル） |
+| trainer NaN | **0** | **停止** |
+
+step 100 時点で上記4項目が全 **0** なら、判定窓まで凍結。
+
+---
+
+## 1d. 開始報告 (5回目 — 2026-07-05 02:00 JST)
+
+### 開始
+
+| 項目 | 値 |
+|---|---|
+| 開始時刻 | **2026-07-05 02:00:52 JST**（step 1、初回 run `014852`） |
+| 本走 tmux | `ppo_p3_20260705_023140` |
+| 本走 run dir | `/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/` |
+| 定常 step/s | **0.284**（30min 実測、初回 run） |
+| 完走見込み | **~16h**（0.284 step/s × 16000 step） |
+
+### 検定 (13)
+
+```
+games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=22
+ALL 13 CHECKS PASSED
+```
+
+### step 100 監視4項目（初回 run `014852` @ step 104）
+
+| 項目 | 値 | 判定 |
+|---|---:|---|
+| `trajectory step count mismatch` | **0** | OK |
+| `illegal_action_fallback_count` | **0** | OK |
+| `online chip resolution failed` | **0** | OK |
+| `loader size delta` (INFO) | **64** | 報告（非ゼロ — **凍結不可**） |
+
+必須3項目は全 0。loader_delta 非ゼロのため監視は継続。
+
+### Mem 30min（初回 run、step 1 から 30min）
+
+| 時刻 | Mem used | available | GPU mem | GPU util |
+|---|---:|---:|---:|---:|
+| 02:30 | 12 GiB | 10 GiB | 6549 / 8151 MiB | 57% |
+
+### インシデント — monitor pipefail 誤停止
+
+初回 run `014852` は step 520 まで正常進行後、`grep` 零件時 exit 1 × `pipefail` で monitor ループが誤停止。修正（`|| true`）後 `023140` で再発進。
 
 ---
 

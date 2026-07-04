@@ -1,12 +1,12 @@
-# PPO P3 Stage1 main run (generated stage1_20260704_223200)
+# PPO P3 Stage1 main run (generated stage1_20260705_023140)
 
 [control]
 version = 4
 online = true
 
-state_file = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/mortal.pth'
-best_state_file = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/best.pth'
-tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/tb'
+state_file = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/mortal.pth'
+best_state_file = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/best.pth'
+tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/tb'
 
 device = 'cuda:0'
 enable_cudnn_benchmark = false
@@ -36,27 +36,27 @@ max_steps = 16000
 
 [train_play.default]
 games = 800
-log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/train_play/default'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/train_play/default'
 repeats = 1
 
 [train_play.client0]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/train_play/client0'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/train_play/client0'
 repeats = 1
 
 [train_play.client1]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/train_play/client1'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/train_play/client1'
 repeats = 1
 
 [train_play.client2]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/train_play/client2'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/train_play/client2'
 repeats = 1
 
 [test_play]
 games = 400
-log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/test_play'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/test_play'
 self_play = true
 
 [dataset]
@@ -124,8 +124,8 @@ host = '127.0.0.1'
 port = 5000
 
 [online.server]
-buffer_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/buffer'
-drain_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/drain'
+buffer_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/buffer'
+drain_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/drain'
 sample_reuse_rate = 0
 sample_reuse_threshold = 0
 capacity = 1600
@@ -141,7 +141,7 @@ num_layers = 2
 [grp.control]
 device = 'cuda:0'
 enable_cudnn_benchmark = false
-tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260704_223200/grp_log'
+tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage1_20260705_023140/grp_log'
 batch_size = 256
 save_every = 2000
 val_steps = 400
