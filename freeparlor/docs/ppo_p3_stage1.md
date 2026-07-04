@@ -1,9 +1,14 @@
-# PPO P3 — Stage1 本走 (2026-07-04 再スタート)
+# PPO P3 — Stage1 本走 (2026-07-04 再々スタート)
 
 **設計:** `ppo_migration_design.md` §5.1 / §7 P3  
-**run dir:** `/home/gamba/mahjong/runs/ppo/stage1_20260704_040100/`  
-**tmux:** `ppo_p3_20260704_040100`  
-**ブランチ:** `ppo-migration`
+**run dir (1回目):** `ppo_p3_aborted_20260704_040100`（step 200 SIGTERM）  
+**run dir (2回目):** `ppo_p3_aborted2_20260704_044030`（step ~3654、プール I/O スラッシングで ~0.06 step/s）  
+**run dir (3回目):** `ppo_p3_aborted3_perf_gate_20260704_214600`（step 251、30min 性能ゲート 0.139 step/s < 0.2 で停止）  
+**再々スタート:** 2026-07-04 21:45 JST — checkpoint 常駐キャッシュ適用後、**最初から**新規 run（性能ゲート未達で停止）  
+**run dir:** `/home/gamba/mahjong/runs/ppo/ppo_p3_aborted3_perf_gate_20260704_214600/`  
+**tmux:** `ppo_p3_20260704_214600`（停止済）  
+**ブランチ:** `ppo-migration`  
+**本走 GO:** **中止** — 性能ゲート未達（別ボトルネック要調査）
 
 ---
 
@@ -19,6 +24,7 @@
 3. **サイレント fallback** — `ppo_engine._pick_actions` の残余ループ（非法行動補正）が発動してもログなし。fp32/-1e9 化後は NaN 経路のみ想定だが、非ゼロ時の検知手段がなかった。
 4. **構成 assert 欠如** — 起動時に guard/eval_mode/record_trajectory を検証する検定がなく、上記が本走 step ~60 まで気づかれず進行。
 5. **game_key 形式不一致**（再スタート時発覚）— `game.rs` の `{:#x}` とログファイル名の decimal key が不一致 → trajectory orphan。`game_key` を `"{seed}_{key}_{split}"` に統一。
+6. **プール I/O スラッシング**（2回目 run 性能劣化）— `PPOOpponentPoolEngine._ensure_weights` が `_react_batch` の ckpt グループ毎に `torch.load` → `load_state_dict` を実行。1 batch 内で最大 7 ckpt × 3 client が競合し、**実効 ~0.06 step/s**（17h で step 3654）。`_game_ckpt` も無制限成長。
 
 ### 修正 (2026-07-04)
 
@@ -30,12 +36,26 @@
 | Rust | guard 発火時 `stderr` 1 行（eval 可視化） |
 | 検定 (10) | trainee: guard=False / eval_mode=False / record_trajectory=True |
 | 検定 (11) | pool engine: `pending_steps` なし（trajectory 混入防止） |
+| プール常駐キャッシュ | `_models: dict[ckpt→(Brain,AC)]`、上限 `past_k+2=7`、超過時 pool 外 ckpt から evict |
+| 検定 (12) | 同一 obs で old-load ≡ 常駐 cache logits（atol=1e-6、2 ckpt） |
+| pool 行動選択 | `pick_actions_from_logits`（fp32/-1e9）に PPOEngine と共通化 |
+| `_game_ckpt` | 上限 1000 超で現 batch step_meta 外キーを掃除 |
 
 ### 再スタート判断
 
-- step 4000 時点の checkpoint は on-policy 汚染の疑いがあり **学習継続不可**。
+- step 4000 時点の checkpoint は on-policy 汚染の疑いがあり **学習継続不可**（1回目 abort）。
+- 2回目 run（`ppo_p3_aborted2_*`）は checkpoint 保存済みだが **性能ゲート未達**（~0.06 step/s ≪ 0.2）のため再々スタート。
 - 汚染 run は `ppo_p3_aborted_*` として削除せず保全（forensic 用）。
 - init は従来通り `beta1_huber_192x40`、config は前回 P3 同一（lr=2e-5, τ=1.0, c_ent=0.01, 16k, save_every=2000）。
+
+### VRAM 見積り（常駐 7 組、実測 2026-07-04）
+
+| 項目 | 値 |
+|---|---|
+| baseline | 2368 MiB |
+| 7 pairs 常駐後 | **2992 MiB** (+624 MiB) |
+| GPU total | 8151 MiB (RTX 5060) |
+| 計測 | `freeparlor/scripts/measure_pool_vram.py --pairs 7` |
 
 ---
 
@@ -47,10 +67,46 @@
 | (b) action_mass 赤条件 | **実装済** | `pi_call_given_possible_aka_held` / `_no_aka` / `aka_over_no_aka` + n |
 | (c) GRP calibration §8 | **実装済** | client pred/actual rank、trainer 2k step ごと `grp_calibration` |
 | (d) ガード範囲・検定 (10)(11) | **本走前修正** | 2026-07-04 再スタート準備で適用 |
+| (e) プール常駐キャッシュ・検定 (12) | **再々スタート前修正** | 2026-07-04 pool I/O スラッシング対策 |
 
 ---
 
-## 1. 開始報告 (2026-07-04 04:07 JST)
+## 1. 開始報告 (3回目 — 2026-07-04 21:45 JST, **性能ゲート中止**)
+
+### 性能ゲート（開始 30 分）
+
+| 項目 | 値 |
+|---|---|
+| 訓練開始 | 2026-07-04 21:54:24 JST（step 1） |
+| 30min 時点 | 2026-07-04 22:24:24 JST |
+| 到達 step | **251** |
+| 実効 step/s | **0.139**（251 / 1800s） |
+| 閾値 | 0.2 step/s |
+| 判定 | **FAIL — 停止**（2.3× 改善 vs aborted2 の ~0.06 だが未達） |
+| GPU mem (22:21) | 5808 / 8151 MiB (71%) |
+
+**所見:** 常駐キャッシュで I/O スラッシングは解消（~0.06→~0.14 step/s）したが、0.2 未満。trainer batch ~1.3s/batch が支配的で、client rollout 待ちまたは trajectory 収集が残ボトルネックの可能性。
+
+### Config
+
+前回 P3 と同一（`stage1_20260704_214600/config.toml`、init=`beta1_huber_192x40`、past_k=5、latest_prob=0.5）
+
+### 検定 (10)(11)(12)
+
+```
+ALL 12 CHECKS PASSED (verify_p1.log)
+(12) step_000000/000001 old-load ≡ resident cache (atol=1e-6)
+```
+
+### カウンタ（step 251 時点）
+
+| カウンタ | 値 |
+|---|---|
+| orphan / fallback / chip_err / NaN | 全 **0**（確認済） |
+
+---
+
+## 1b. 開始報告 (2回目 — 2026-07-04 04:07 JST, aborted2)
 
 ### Config 全文
 
@@ -131,6 +187,16 @@ opponent pool engine config dump: guard=False has_pending_steps=False
 - GPU: idle 確認後起動
 - libriichi.so: `PYO3_PYTHON=$CONDA_PREFIX/bin/python cargo build` で再ビルド済み（import OK）
 - 中間 run `033843` は game_key 不一致で trajectory 全 orphan → `ppo_p3_aborted_20260704_033843` に保全
+
+### 本走 GO 時点スナップショット (04:24 JST)
+
+| 項目 | 値 |
+|---|---|
+| step | **112** / 16000 |
+| orphan / fallback / chip_err / NaN | 全 **0** |
+| Mem | 10 GiB used / 12 GiB avail |
+| GPU | ~5.1 GiB / 8151 MiB (65%) |
+| tmux | `ppo_p3_20260704_040100` alive |
 
 ---
 

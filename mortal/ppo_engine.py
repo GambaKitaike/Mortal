@@ -10,6 +10,30 @@ from model import ActorCritic, Brain
 from ppo import action_log_probs
 
 
+def pick_actions_from_logits(
+    logits: torch.Tensor,
+    masks_t: torch.Tensor,
+    *,
+    eval_mode: bool,
+) -> tuple[torch.Tensor, int]:
+    # float32: AMP 下の -inf mask が illegal action を argmax するのを防ぐ
+    masked = logits.float().masked_fill(~masks_t, -1e9)
+    if eval_mode:
+        actions = masked.argmax(-1)
+    else:
+        actions = Categorical(logits=masked).sample()
+    fallback = 0
+    for i in range(masks_t.shape[0]):
+        if not masks_t[i, actions[i]]:
+            fallback += 1
+            legal = masks_t[i].nonzero(as_tuple=True)[0]
+            if legal.numel() == 0:
+                actions[i] = 0
+            else:
+                actions[i] = legal[masked[i, legal].argmax()]
+    return actions, fallback
+
+
 def dump_engine_config(engine) -> dict:
     return {
         'name': engine.name,
@@ -55,21 +79,7 @@ class PPOEngine:
         self.illegal_action_fallback_count = 0
 
     def _pick_actions(self, logits: torch.Tensor, masks_t: torch.Tensor, *, eval_mode: bool) -> torch.Tensor:
-        # float32: AMP 下の -inf mask が illegal action を argmax するのを防ぐ
-        masked = logits.float().masked_fill(~masks_t, -1e9)
-        if eval_mode:
-            actions = masked.argmax(-1)
-        else:
-            actions = Categorical(logits=masked).sample()
-        fallback = 0
-        for i in range(masks_t.shape[0]):
-            if not masks_t[i, actions[i]]:
-                fallback += 1
-                legal = masks_t[i].nonzero(as_tuple=True)[0]
-                if legal.numel() == 0:
-                    actions[i] = 0
-                else:
-                    actions[i] = legal[masked[i, legal].argmax()]
+        actions, fallback = pick_actions_from_logits(logits, masks_t, eval_mode=eval_mode)
         self.illegal_action_fallback_count += fallback
         return actions
 

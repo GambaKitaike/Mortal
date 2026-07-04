@@ -383,6 +383,77 @@ def check_pool_engine_no_trajectory(buf: StringIO):
     log('  PASS: pool engine guard=False, no pending_steps / record_trajectory', buf)
 
 
+def check_pool_cache_logits_parity(buf: StringIO):
+    log('(12) pool engine resident cache logits parity (old load vs cache)', buf)
+    from opponent_pool import OpponentPool
+    from ppo_pool_engine import PPOOpponentPoolEngine
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    version = 4
+    conv_channels = 192
+    num_blocks = 40
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_pool_cache_') as tmp:
+        ckpt_dir = Path(tmp)
+        mortal = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks).eval()
+        ac = ActorCritic(version=version, tau=1.0).eval()
+        ckpts: list[Path] = []
+        for step in (0, 1):
+            if step == 1:
+                with torch.no_grad():
+                    for p in mortal.parameters():
+                        p.add_(torch.randn_like(p) * 0.01)
+                    for p in ac.parameters():
+                        p.add_(torch.randn_like(p) * 0.01)
+            path = ckpt_dir / f'step_{step:06d}.pth'
+            torch.save({
+                'mortal': mortal.state_dict(),
+                'actor_critic': ac.state_dict(),
+                'steps': step,
+            }, path)
+            ckpts.append(path)
+
+        pool = OpponentPool(ckpt_dir, past_k=5, latest_prob=0.5, fallback_checkpoint=ckpts[0])
+        engine = PPOOpponentPoolEngine(
+            Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks).eval(),
+            ActorCritic(version=version, tau=1.0).eval(),
+            pool,
+            version=version,
+            device=device,
+            enable_amp=False,
+            eval_mode=True,
+        )
+
+        c, w = obs_shape(version)
+        n = 8
+        obs_t = torch.randn(n, c, w, device=device)
+        masks_t = torch.zeros(n, ACTION_SPACE, dtype=torch.bool, device=device)
+        for i in range(n):
+            legal = torch.randperm(ACTION_SPACE, device=device)[:8]
+            masks_t[i, legal] = True
+
+        reload_brain = Brain(
+            version=version, conv_channels=conv_channels, num_blocks=num_blocks,
+        ).eval().to(device)
+        reload_ac = ActorCritic(version=version, tau=1.0).eval().to(device)
+
+        for ckpt in ckpts:
+            with torch.inference_mode():
+                pool.load_ppo(ckpt, reload_brain, reload_ac, map_location=device)
+                phi_old = reload_brain(obs_t)
+                logits_old, _ = reload_ac(phi_old, masks_t)
+
+                brain, ac_cached = engine._get_model(ckpt)
+                phi_new = brain(obs_t)
+                logits_new, _ = ac_cached(phi_new, masks_t)
+
+            assert torch.allclose(logits_old.float(), logits_new.float(), atol=1e-6), (
+                f'logits mismatch for {ckpt.name}'
+            )
+            log(f'  PASS: {ckpt.name} old-load ≡ resident cache (atol=1e-6)', buf)
+    log('  PASS: pool cache logits parity for 2 checkpoints', buf)
+
+
 def check_checkpoint_load(ckpt: str, buf: StringIO):
     log('(6) legacy checkpoint load after chip head removal', buf)
     state = torch.load(ckpt, weights_only=True, map_location='cpu')
@@ -434,9 +505,10 @@ def main():
     check_dqn_one_vs_three(args.checkpoint, buf)
     check_train_engine_config(args.checkpoint, buf)
     check_pool_engine_no_trajectory(buf)
+    check_pool_cache_logits_parity(buf)
 
     log('', buf)
-    log('ALL 11 CHECKS PASSED', buf)
+    log('ALL 12 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0
