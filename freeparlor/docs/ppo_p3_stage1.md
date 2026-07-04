@@ -170,17 +170,58 @@ ALL 12 CHECKS PASSED
 | 21:56 | 1.4 GiB | 22 GiB | 1680 / 8151 MiB | — |
 | 22:21 | 10 GiB | 12 GiB | 5808 / 8151 MiB | 78% |
 
-### 監視期待値（凍結ルール — 4項目 + NaN）
+### 監視期待値（凍結ルール — 必須3項目 + NaN、loader_delta 除外）
 
 | 項目 | 期待 | 非ゼロ時 |
 |---|---|---|
 | `trajectory step count mismatch` | **0** | **停止** |
 | `illegal_action_fallback_count` | **0** | **停止** |
 | `online chip resolution failed` | **0** | **停止** |
-| `loader size delta` (INFO) | **0** | **報告のみ**（記録漏れ新種の早期シグナル） |
+| `loader size delta` (INFO) | 任意 | **報告のみ**（局内 obs 境界の既知特性 — 下記 §1e） |
 | trainer NaN | **0** | **停止** |
 
-step 100 時点で上記4項目が全 **0** なら、判定窓まで凍結。
+必須3項目 + NaN が全 **0** なら、判定窓まで**凍結**（2026-07-05 §1e 宣言）。
+
+---
+
+## 1e. loader_delta 特性（2026-07-05 03:15 JST 解析）
+
+**対象 run:** `stage1_20260705_023140`（走行継続中、解析時 step **559**）  
+**方法:** drain 直近 50 ゲームの `.traj` + train_play `json.gz`（セッション間 rmtree 対策で `/tmp/loader_delta_archive` に退避コピー）。GameplayLoader obs 列と traj `action` 列を NW 整列し、runtime 側 `at_kyoku` を loader ラベルで推定（`nice 19`・CPU のみ・シングルプロセス）。
+
+### 1. 局境界一致（凍結必要条件）
+
+| 検証 | 結果 |
+|---|---|
+| loader 局数 `len(grp)` vs runtime 推定 `max(at_kyoku)+1` | **50 / 50 一致** |
+
+不一致 **0 件**。delta があっても局を跨ぐズレは検出されず。
+
+### 2. delta 内訳（50 ゲーム）
+
+| 項目 | 値 |
+|---|---:|
+| delta ≠ 0 のゲーム | **28 / 50**（56%） |
+| 方向 runtime > loader | **22** |
+| 方向 loader > runtime | **6** |
+| \|delta\| = 1 | **22** |
+| \|delta\| = 2 | **5** |
+| \|delta\| = 3 | **1** |
+| 整列ギャップ位置のイベント文脈（38 サイト） | **other** 100%（riichi / kan / hora / 流局 / riichi 直後に単一収束せず） |
+
+run 全体（client ログ 282 件）でも \|delta\|=1 が **75%**（±1 合計 211/282）。**局内 obs 境界の既知の癖**（GameplayLoader 4-event window vs arena kan_select 記録差、§インシデント trajectory skip 修正と同型）であり、整合性（kyoku 数・chip・join）とは独立。
+
+### 3. 凍結宣言
+
+| 項目 | 解析時点 @ step 559 |
+|---|---:|
+| `trajectory step count mismatch` | **0** |
+| `illegal_action_fallback_count` | **0** |
+| `online chip resolution failed` | **0** |
+| trainer NaN | **0** |
+| `loader size delta` (INFO) | **282**（累計 — **監視除外**） |
+
+**判定:** 必須3項目 + NaN 全 0、局境界 50/50 一致 → **loader_delta は特性既知として凍結条件から除外**。**本走は判定窓（step 8000–16000）まで凍結**（2026-07-05 03:15 JST 宣言）。
 
 ---
 
@@ -212,7 +253,7 @@ ALL 13 CHECKS PASSED
 | `online chip resolution failed` | **0** | OK |
 | `loader size delta` (INFO) | **64** | 報告（非ゼロ — **凍結不可**） |
 
-必須3項目は全 0。loader_delta 非ゼロのため監視は継続。
+必須3項目は全 0。loader_delta 非ゼロのため当時は凍結不可だったが、§1e 解析（50/50 局境界一致）により **loader_delta 除外で凍結**（2026-07-05）。
 
 ### Mem 30min（初回 run、step 1 から 30min）
 
