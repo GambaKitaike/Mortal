@@ -412,6 +412,23 @@ daiminkan-only 局面で **kan_select フェーズ + action 42 の二段記録**
 | 開始時刻 | **2026-07-05 07:40:47 JST**（trainer init） |
 | tmux | `ppo_p3_20260705_072900` |
 | run dir | `/home/gamba/mahjong/runs/ppo/stage1_20260705_072900/` |
+| 実 checkpoint dir | `/home/gamba/mahjong/runs/ppo/stage1_20260705_053301/`（config `state_file` 参照先） |
+
+### pause / resume（2026-07-05）
+
+| 項目 | 値 |
+|---|---|
+| 計画停止 | **step 10000** @ **2026-07-05 18:49:19 JST** |
+| 再開 | **未実施**（preflight + 検定 (16) 通過後、ユーザー確認待ち） |
+| 詳細 | `freeparlor/docs/ppo_p3_pause_resume.md` |
+
+判定窓 8000–16000 の集計は **run7a (8000–10000) + run7b (10000–16000)** を global step で連結。step 10000 に運用上の継ぎ目あり（on-policy 連続性のみ一時リセット、optimizer・プール・config は継続）。
+
+再開コマンド（preflight のみ）:
+
+```bash
+bash freeparlor/scripts/run_ppo_p3_resume.sh
+```
 
 ### 検定 (15) — pre-flight ログ
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import tempfile
 from datetime import datetime, timezone
@@ -1038,6 +1039,123 @@ def check_checkpoint_load(ckpt: str, buf: StringIO):
     log('  PASS: strict=False ignores chip_net; ActorCritic loads main heads', buf)
 
 
+def check_optimizer_resume(buf: StringIO):
+    """save → load → 1 opt step: AdamW moments must roundtrip and continue (not reset)."""
+    import subprocess
+    import textwrap
+
+    log('(16) optimizer state resume (save → load → 1 step)', buf)
+
+    resume_ckpt = Path(
+        os.environ.get(
+            'PPO_RESUME_CKPT',
+            '/home/gamba/mahjong/runs/ppo/stage1_20260705_053301/checkpoints/step_010000.pth',
+        )
+    )
+    if resume_ckpt.is_file():
+        state = torch.load(resume_ckpt, weights_only=True, map_location='cpu')
+        assert state.get('steps') == 10000, f"steps={state.get('steps')}"
+        opt_sd = state['optimizer']
+        saved_norms = sorted(
+            (int(k), v['exp_avg'].float().norm().item())
+            for k, v in opt_sd['state'].items()
+        )
+        assert len(saved_norms) == 411, f'optimizer params={len(saved_norms)}'
+        assert saved_norms[-1][1] > 0, 'exp_avg norms must be non-zero at step 10000'
+
+        version = state['config']['control']['version']
+        resnet = state['config']['resnet']
+        optim_cfg = state['config'].get('optim', {})
+        mortal = Brain(version=version, **resnet)
+        ac = ActorCritic(version=version, tau=state['config']['ppo']['tau_init'])
+        from torch import optim
+
+        optimizer = optim.AdamW(
+            list(mortal.parameters()) + list(ac.parameters()),
+            lr=state['config']['ppo']['lr'],
+            eps=optim_cfg.get('eps', 1e-8),
+            betas=tuple(optim_cfg.get('betas', [0.9, 0.999])),
+            weight_decay=optim_cfg.get('weight_decay', 0.1),
+        )
+        mortal.load_state_dict(state['mortal'])
+        ac.load_state_dict(state['actor_critic'])
+        optimizer.load_state_dict(opt_sd)
+
+        params = list(mortal.parameters()) + list(ac.parameters())
+        before = [optimizer.state[p]['exp_avg'].clone() for p in params]
+        reloaded = optimizer.state_dict()
+        for key, saved_st in opt_sd['state'].items():
+            torch.testing.assert_close(
+                reloaded['state'][key]['exp_avg'],
+                saved_st['exp_avg'],
+                rtol=0,
+                atol=1e-6,
+                msg=f'load mismatch param {key}',
+            )
+
+        c, w = obs_shape(version)
+        obs = torch.randn(8, c, w)
+        masks = torch.zeros(8, ACTION_SPACE, dtype=torch.bool)
+        for row in range(8):
+            masks[row, :8] = True
+        actions = masks.int().argmax(dim=1)
+        mortal.train()
+        ac.train()
+        optimizer.zero_grad(set_to_none=True)
+        phi = mortal(obs)
+        logits, values = ac(phi, masks)
+        logp = action_log_probs(logits, masks, actions)
+        loss = -logp.mean() + 0.5 * values.pow(2).mean()
+        loss.backward()
+        optimizer.step()
+
+        after = [optimizer.state[p]['exp_avg'] for p in params]
+        changed = sum(1 for b, a in zip(before, after) if not torch.allclose(b, a, atol=1e-12))
+        assert changed > 0, 'optimizer moments unchanged after 1 step'
+        log(f'  real ckpt: {resume_ckpt.name} params={len(params)} changed={changed}', buf)
+    else:
+        log(f'  WARN: resume ckpt missing ({resume_ckpt}), synthetic subprocess only', buf)
+
+    script = textwrap.dedent('''
+        import torch
+        import torch.nn as nn
+        from torch import optim
+
+        torch.manual_seed(42)
+        model = nn.Linear(4, 2)
+        optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+        x = torch.randn(8, 4)
+        y = torch.randn(8, 2)
+        for _ in range(3):
+            optimizer.zero_grad(set_to_none=True)
+            (model(x) - y).pow(2).mean().backward()
+            optimizer.step()
+        saved = optimizer.state_dict()
+        saved_moment = saved['state'][0]['exp_avg'].clone()
+
+        model2 = nn.Linear(4, 2)
+        optimizer2 = optim.AdamW(model2.parameters(), lr=1e-3)
+        model2.load_state_dict(model.state_dict())
+        optimizer2.load_state_dict(saved)
+        loaded_moment = optimizer2.state_dict()['state'][0]['exp_avg']
+        torch.testing.assert_close(loaded_moment, saved_moment, rtol=0, atol=1e-6)
+
+        optimizer2.zero_grad(set_to_none=True)
+        (model2(x) - y).pow(2).mean().backward()
+        optimizer2.step()
+        after_moment = optimizer2.state_dict()['state'][0]['exp_avg']
+        assert not torch.allclose(after_moment, saved_moment, atol=1e-12)
+        print('OK synthetic load+1step')
+    ''')
+    proc = subprocess.run([sys.executable, '-c', script], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        log(proc.stdout, buf)
+        log(proc.stderr, buf)
+        raise AssertionError(f'optimizer resume subprocess failed (exit {proc.returncode})')
+    log(f'  {proc.stdout.strip()}', buf)
+    log('  PASS: optimizer exp_avg continues after save/load (16)', buf)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', default=DEFAULT_CKPT)
@@ -1070,9 +1188,10 @@ def main():
     check_trajectory_join(args.checkpoint, args.grp_state, buf)
     check_reward_placement_e2e(args.checkpoint, args.grp_state, buf)
     check_daiminkan_direct_path(args.checkpoint, args.grp_state, buf)
+    check_optimizer_resume(buf)
 
     log('', buf)
-    log('ALL 15 CHECKS PASSED', buf)
+    log('ALL 16 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0
