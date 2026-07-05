@@ -495,6 +495,75 @@ ALL 14 CHECKS PASSED
 
 ---
 
+## 1g. 開始報告 (run #7b — 2026-07-06 resume)
+
+### 概要
+
+| 項目 | 値 |
+|---|---|
+| 再開時刻 | **2026-07-06 02:40:07 JST**（step 10001） |
+| tmux | `ppo_p3_20260706_020120_resume` |
+| run dir | `/home/gamba/mahjong/runs/ppo/stage1_20260706_020120_resume/` |
+| checkpoint 源 | `stage1_20260705_053301/checkpoints/step_010000.pth`（125M） |
+| pool ckpt | 同 `stage1_20260705_053301/checkpoints/` からコピー（6 files: step_000000〜010000） |
+| config | run #7 同一（lr=2e-5, τ=1.0, c_ent=0.01, save_every=2000, max_steps=16000） |
+
+### preflight（2回実施）
+
+```
+[1回目: run_ppo_p3_resume.sh LAUNCH=0]
+ALL 16 CHECKS PASSED (02:17:06 JST)
+resume checkpoint OK: steps=10,000 optimizer_params=411
+
+[2回目: run_ppo_p3_stage1_inner.sh MORTAL_FOREGROUND=1]
+ALL 16 CHECKS PASSED
+(13) games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=32
+(14) games=20 passed=20 end_kyoku/done/reward all OK
+(15) daiminkan game=1_48879_b action42_present=True
+(16) real ckpt: step_010000.pth params=411 changed=411 — PASS: optimizer exp_avg continues after save/load
+```
+
+### 監視5項目 @ step 10120（02:50:23 JST）
+
+| 項目 | 値 | 判定 |
+|---|---:|---|
+| `trajectory step count mismatch` | **0** | OK ✓ |
+| `illegal_action_fallback_count` | **0** | OK ✓ |
+| `online chip resolution failed` | **0** | OK ✓ |
+| `loader size delta` (INFO) | **67** | 報告（非致命・凍結除外） |
+| alive clients | **≥3/3** | OK ✓ |
+| trainer NaN | **0** | OK ✓ |
+
+### 実効 step/s
+
+| 区間 | step 増分 | 実効 step/s |
+|---|---:|---:|
+| 全体（10001→10120） | 119 / 616s | **0.193** |
+| 定常域近傍（10095→10120） | 25 / ~55s | **~0.45** |
+
+run #7 の 0.284 step/s（全体30min計測）と比較: 初期バッファ充填フェーズ（~7.5分）込みの全体平均は低め。定常域は ~0.45 step/s で同水準以上。
+
+### Mem / GPU（02:46:56 JST、起動後 ~14min）
+
+| 項目 | 値 |
+|---|---:|
+| RAM used | 10 GiB |
+| RAM available | 12 GiB |
+| GPU mem | 6035 / 8151 MiB |
+| GPU util | 66% |
+
+### step 到達性
+
+step 10001（02:40:07）→ 10120（02:50:23）、10分間連続前進。停滞なし。
+
+### 凍結宣言
+
+**step 10120 到達 + 必須3項目 + NaN 全 0 + alive clients ≥3/3 → run7b は step 16000 完走まで凍結**（2026-07-06 02:52 JST 宣言）。
+
+以後 step 16000 完走まで コード・config 変更禁止（例外: クラッシュ・データ整合性の破れのみ）。
+
+---
+
 ## 1d. 開始報告 (5回目 — 2026-07-05 02:00 JST)
 
 ### 開始

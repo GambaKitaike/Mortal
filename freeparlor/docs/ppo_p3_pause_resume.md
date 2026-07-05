@@ -85,7 +85,7 @@ sample exp_avg norm: 38.05
 |---|---|
 | 計画停止 step | **10000** |
 | 停止時刻 | **2026-07-05 18:49:19 JST**（`step_010000.pth` / `mortal.pth` 保存ログ） |
-| 再開時刻 | **未実施**（本ドキュメント commit 後、ユーザー確認待ち） |
+| 再開時刻 | **2026-07-06 02:40:07 JST**（step 10001、run7b: `stage1_20260706_020120_resume`） |
 | checkpoint 源 | `/home/gamba/mahjong/runs/ppo/stage1_20260705_053301/checkpoints/step_010000.pth` |
 
 ### 判定窓 8000–16000 の集計方針
