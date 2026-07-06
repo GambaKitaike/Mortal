@@ -622,6 +622,7 @@ ALL 13 CHECKS PASSED
 version = 4
 online = true
 save_every = 2000
+
 test_every = 100000   # inline test_play 無効 (> max_steps)
 submit_every = 50
 

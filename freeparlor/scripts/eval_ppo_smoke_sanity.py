@@ -104,6 +104,7 @@ def main():
     log.info('agari_rate=%.2f%%', stat.agari_rate * 100)
     log.info('fuuro_rate=%.2f%%', stat.fuuro_rate * 100)
     log.info('riichi_rate=%.2f%%', stat.riichi_rate * 100)
+    log.info('ryukyoku_rate=%.2f%%', stat.ryukyoku_rate * 100)
     log.info('eval_sanity: 完了')
 
     print(f'label={eval_label}')
@@ -113,6 +114,7 @@ def main():
     print(f'agari_rate={stat.agari_rate * 100:.2f}%')
     print(f'fuuro_rate={stat.fuuro_rate * 100:.2f}%')
     print(f'riichi_rate={stat.riichi_rate * 100:.2f}%')
+    print(f'ryukyoku_rate={stat.ryukyoku_rate * 100:.2f}%')
 
 
 if __name__ == '__main__':
