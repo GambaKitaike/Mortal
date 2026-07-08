@@ -46,6 +46,10 @@ def dump_engine_config(engine) -> dict:
         'record_trajectory': getattr(engine, 'record_trajectory', None),
         'tau': tau,
         'has_pending_steps': hasattr(engine, 'pending_steps'),
+        # Stage2 赤濃縮 (stage2_design.md §2). Absent on non-PPO / opponent
+        # engines, which is intentionally equivalent to 0.0 (no-op) here and
+        # on the Rust side (libriichi arena OneVsThree::py_vs_py).
+        'p_enrich': getattr(engine, 'p_enrich', 0.0),
     }
 
 
@@ -66,6 +70,7 @@ class PPOEngine:
         name='NoName',
         eval_mode=False,
         record_trajectory=True,
+        p_enrich=0.0,
     ):
         self.device = device or torch.device('cpu')
         self.brain = brain.to(self.device).eval()
@@ -78,6 +83,11 @@ class PPOEngine:
         self.name = name
         self.eval_mode = eval_mode
         self.record_trajectory = record_trajectory
+        # Stage2 赤濃縮 (stage2_design.md §2). Read by the Rust arena
+        # (OneVsThree::py_vs_py) off the *challenger* engine only — the
+        # trainee client is always passed as `challenger`, so this attribute
+        # has no effect when this engine is used as `champion`/opponent.
+        self.p_enrich = p_enrich
         self.pending_by_game: dict[str, dict[int, dict]] = {}
         self.pending_steps: list[dict] = []
         self.illegal_action_fallback_count = 0
@@ -175,8 +185,16 @@ def build_production_trainee_engine(
     version,
     device=None,
     name: str = 'trainee',
+    p_enrich: float = 0.0,
 ) -> PPOEngine:
-    """Same kwargs as mortal/client.py train-rollout PPOEngine."""
+    """Same kwargs as mortal/client.py train-rollout PPOEngine.
+
+    p_enrich defaults to 0.0 (natural haipai distribution). Only the actual
+    train-rollout call site (mortal/client.py) should pass a non-zero value,
+    read from config['ppo']['p_enrich'] — eval call sites (player.py
+    TestPlayer, verify_ppo_p1.py) must never set it, keeping eval always on
+    the natural distribution per stage2_design.md §2.
+    """
     return PPOEngine(
         brain,
         actor_critic,
@@ -186,4 +204,5 @@ def build_production_trainee_engine(
         enable_amp=True,
         enable_quick_eval=False,
         name=name,
+        p_enrich=p_enrich,
     )

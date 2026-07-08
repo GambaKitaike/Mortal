@@ -240,6 +240,7 @@ def main():
                 head,
                 version=version,
                 device=device,
+                p_enrich=config['ppo'].get('p_enrich', 0.0),
             )
             trainee_cfg = dump_engine_config(engine)
             logging.info(f'trainee engine config dump: {trainee_cfg}')

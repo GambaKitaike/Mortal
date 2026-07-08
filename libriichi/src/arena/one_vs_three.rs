@@ -41,6 +41,15 @@ impl OneVsThree {
         seed_count: u64,
         py: Python<'_>,
     ) -> Result<[i32; 4]> {
+        // Stage2 赤濃縮 (stage2_design.md §2): only the challenger ("trainee"
+        // client) ever supplies p_enrich; eval/opponent engines simply don't
+        // define the attribute and fall back to 0.0 (no-op).
+        let p_enrich = challenger
+            .bind_borrowed(py)
+            .getattr("p_enrich")
+            .and_then(|v| v.extract::<f64>())
+            .unwrap_or(0.0);
+
         // `allow_threads` is required, otherwise it will block python GC to
         // run, leading to memory leaks, since this function is doing long
         // tasks.
@@ -50,6 +59,7 @@ impl OneVsThree {
                 |player_ids| new_py_agent(champion, player_ids),
                 seed_start,
                 seed_count,
+                p_enrich,
             )?;
 
             let mut rankings = [0; 4];
@@ -75,6 +85,7 @@ impl OneVsThree {
                 |player_ids| new_py_agent(engine, player_ids),
                 seed_start,
                 seed_count,
+                0.0,
             )?;
 
             let mut rankings = [0; 4];
@@ -100,6 +111,7 @@ impl OneVsThree {
                 |player_ids| AkochanAgent::new_batched(player_ids).map(|a| Box::new(a) as _),
                 seed_start,
                 seed_count,
+                0.0,
             )?;
 
             let mut rankings = [0; 4];
@@ -119,6 +131,7 @@ impl OneVsThree {
         new_champion_agent: M,
         seed_start: (u64, u64),
         seed_count: u64,
+        p_enrich: f64,
     ) -> Result<Vec<GameResult>>
     where
         C: FnOnce(&[u8]) -> Result<Box<dyn BatchAgent>>,
@@ -159,7 +172,8 @@ impl OneVsThree {
             new_challenger_agent(&challenger_player_ids)?,
             new_champion_agent(&champion_player_ids)?,
         ];
-        let batch_game = BatchGame::tenhou_hanchan(self.disable_progress_bar);
+        let mut batch_game = BatchGame::tenhou_hanchan(self.disable_progress_bar);
+        batch_game.p_enrich = p_enrich;
 
         let mut challenger_idx = 0;
         let mut champion_idx = 0;

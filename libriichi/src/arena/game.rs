@@ -14,6 +14,11 @@ pub struct BatchGame {
     pub length: u8,
     pub init_scores: [i32; 4],
     pub disable_progress_bar: bool,
+    /// Stage2 赤濃縮 (stage2_design.md §2). 0.0 (default) is a no-op: applies
+    /// uniformly to every game in the batch, targeting whichever seat is
+    /// occupied by agent_idx 0 (the "trainee"/"challenger" by this codebase's
+    /// convention, see `run`).
+    pub p_enrich: f64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -29,6 +34,11 @@ struct Game {
     length: u8,
     seed: (u64, u64),
     indexes: [Index; 4],
+    // Stage2 赤濃縮 (stage2_design.md §2): applies only to trainee_seat, and
+    // only when p_enrich > 0.0 (eval/opponent-only batches leave both at
+    // their Default, i.e. 0.0 / None, which is a byte-exact no-op).
+    p_enrich: f64,
+    trainee_seat: Option<u8>,
 
     oracle_obs_versions: [Option<u32>; 4],
     invisible_state_cache: [Option<Array2<f32>>; 4],
@@ -82,7 +92,7 @@ impl Game {
                 scores: self.scores,
                 ..Default::default()
             };
-            next_board.init_from_seed(self.seed);
+            next_board.init_from_seed_enriched(self.seed, self.p_enrich, self.trainee_seat);
             self.board = next_board.into_state();
             self.kyoku_started = true;
         }
@@ -224,6 +234,7 @@ impl BatchGame {
             length: 8,
             init_scores: [25000; 4],
             disable_progress_bar,
+            p_enrich: 0.0,
         }
     }
 
@@ -256,12 +267,22 @@ impl BatchGame {
                     oracle_obs_versions[i] = agents[idx.agent_idx].oracle_obs_version();
                 }
 
+                // agent_idx 0 is the "trainee"/"challenger" by this codebase's
+                // convention (see `OneVsThree::run_batch`, `TwoVsTwo::run_batch`);
+                // p_enrich only ever targets that seat.
+                let trainee_seat = idxs
+                    .iter()
+                    .position(|idx| idx.agent_idx == 0)
+                    .map(|p| p as u8);
+
                 let game = Box::new(Game {
                     length: self.length,
                     seed,
                     indexes: *idxs,
                     scores: self.init_scores,
                     oracle_obs_versions,
+                    p_enrich: self.p_enrich,
+                    trainee_seat,
                     ..Default::default()
                 });
                 Ok((game_idx, game))

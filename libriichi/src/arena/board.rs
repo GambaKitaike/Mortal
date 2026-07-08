@@ -98,6 +98,30 @@ pub enum Poll {
 
 impl Board {
     pub fn init_from_seed(&mut self, game_seed: (u64, u64)) {
+        // Stage2 (Rejection sampling): trainee_seat=None short-circuits to the
+        // exact original code path below (no extra RNG draws), so callers that
+        // never enrich (dataset loader, arena eval) are byte-for-byte unchanged.
+        self.init_from_seed_enriched(game_seed, 0.0, None);
+    }
+
+    /// Stage2 赤濃縮カリキュラム (`stage2_design.md` §2). With probability
+    /// `p_enrich`, re-shuffle until `trainee_seat`'s 13-tile haipai contains at
+    /// least one aka (5mr/5pr/5sr). The wall (136 tiles incl. 3 akas), scoring,
+    /// observation and mjai encoding are all untouched — only which permutation
+    /// of `UNSHUFFLED` gets dealt changes.
+    ///
+    /// `p_enrich == 0.0` MUST NOT consume any RNG beyond the original single
+    /// `seq.shuffle(&mut rng)` call: downstream kyoku are seeded off the same
+    /// `(nonce, key, kyoku, honba)` tuple, so any extra draw here would
+    /// silently desync every haipai from the pre-Stage2 code path (verify
+    /// check 17a asserts exact reproduction of the pre-implementation golden
+    /// hashes for this reason).
+    pub fn init_from_seed_enriched(
+        &mut self,
+        game_seed: (u64, u64),
+        p_enrich: f64,
+        trainee_seat: Option<u8>,
+    ) {
         let (nonce, key) = game_seed;
         let kyoku_seed = Sha3_256::new()
             .chain_update(nonce.to_le_bytes())
@@ -107,7 +131,20 @@ impl Board {
             .into();
         let mut rng = ChaCha12Rng::from_seed(kyoku_seed);
         let mut seq = UNSHUFFLED;
-        seq.shuffle(&mut rng);
+
+        match trainee_seat {
+            Some(seat) if p_enrich > 0.0 => {
+                let should_enrich = p_enrich >= 1.0 || rng.random_bool(p_enrich);
+                let start = seat as usize * 13;
+                loop {
+                    seq.shuffle(&mut rng);
+                    if !should_enrich || seq[start..start + 13].iter().any(|t| t.is_aka()) {
+                        break;
+                    }
+                }
+            }
+            _ => seq.shuffle(&mut rng),
+        }
 
         self.haipai = array::from_fn(|i| seq[i * 13..(i + 1) * 13].try_into().unwrap());
         let mut idx = 13 * 4;

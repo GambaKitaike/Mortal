@@ -1156,6 +1156,160 @@ def check_optimizer_resume(buf: StringIO):
     log('  PASS: optimizer exp_avg continues after save/load (16)', buf)
 
 
+# Stage2 赤濃縮カリキュラム (17): 配牌 rejection sampling (stage2_design.md §2-3).
+#
+# Golden hashes below were captured at HEAD (pre-Stage2, commit 65bbaae, before
+# `Board::init_from_seed_enriched` was added) using this exact procedure:
+#   - 3 seed bases (10000, 20000, 30000), each with seed_count=5 → 5*4=20
+#     hanchans per base (60 hanchans total), seed key=0xBEEF.
+#   - challenger vs champion = two deterministic "first legal action" python
+#     engines (no neural net; masks are always non-empty per game rules), run
+#     through `libriichi.arena.OneVsThree.py_vs_py`.
+#   - Every `start_kyoku` event's `tehais[trainee_seat]` (trainee_seat derived
+#     from the split letter in the log filename: a/b/c/d -> 0/1/2/3) was
+#     collected in file/emission order, joined as `','.join(tehai) + '|'` per
+#     kyoku, and SHA256'd over the full byte stream for that seed base.
+# Reproduced with `freeparlor/scripts/../../scratchpad` capture harness; see
+# commit message for this check for the exact throwaway script used.
+_P_ENRICH_GOLDEN = {
+    10000: '0fab7a161d553f27d1f672683e44c29f0bd4bc063ad561a176bf41ada3d77600',
+    20000: '15fdb431576013174d5bc31973203bbf706294e8ddf02b951fe5b1ca1560ffd4',
+    30000: 'af94a6915cb01c50abc22f0c53258b77cb72199092de699bc73d1d2dbfad255a',
+}
+_P_ENRICH_SEED_COUNT = 5  # -> 20 hanchans/base (5 seeds * 4 splits)
+_P_ENRICH_SEED_KEY = 0xBEEF
+
+_AKA_TILES = frozenset({'5mr', '5pr', '5sr'})
+_SPLIT_SEAT = {'a': 0, 'b': 1, 'c': 2, 'd': 3}
+
+
+class _FirstLegalEngine:
+    """Deterministic, network-free stub: always picks the lowest-index legal
+    action. Haipai generation is independent of policy, so this is sufficient
+    (and much faster / GPU-free) for a check that only inspects `tehais`."""
+
+    engine_type = 'mortal'
+
+    def __init__(self, name, p_enrich=0.0):
+        self.name = name
+        self.is_oracle = False
+        self.version = 4
+        self.enable_quick_eval = False
+        self.enable_rule_based_agari_guard = False
+        self.p_enrich = p_enrich
+
+    def react_batch(self, obs, masks, invisible_obs, step_meta=None):
+        masks_arr = np.asarray(masks)
+        actions = masks_arr.argmax(axis=1).astype(int).tolist()
+        q_out = masks_arr.astype(float).tolist()
+        is_greedy = [True] * len(masks)
+        return actions, q_out, masks_arr.tolist(), is_greedy
+
+
+def _run_p_enrich_selfplay(seed_base: int, p_enrich: float):
+    import gzip
+    import hashlib
+    import json
+    import shutil
+
+    from libriichi.arena import OneVsThree
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_penrich_') as tmp:
+        log_dir = Path(tmp)
+        chal = _FirstLegalEngine('chal', p_enrich=p_enrich)
+        champ = _FirstLegalEngine('champ')
+        env = OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
+        env.py_vs_py(
+            challenger=chal,
+            champion=champ,
+            seed_start=(seed_base, _P_ENRICH_SEED_KEY),
+            seed_count=_P_ENRICH_SEED_COUNT,
+        )
+
+        sequences = []
+        aka_hands = 0
+        total_hands = 0
+        for fn in sorted(log_dir.glob('*.json.gz')):
+            split = fn.name.rsplit('_', 1)[-1].split('.')[0]
+            seat = _SPLIT_SEAT[split]
+            with gzip.open(fn, 'rt', encoding='utf-8') as f:
+                for line in f:
+                    ev = json.loads(line)
+                    if ev.get('type') == 'start_kyoku':
+                        tehai = ev['tehais'][seat]
+                        sequences.append(','.join(tehai))
+                        total_hands += 1
+                        if any(t in _AKA_TILES for t in tehai):
+                            aka_hands += 1
+        shutil.rmtree(log_dir, ignore_errors=True)
+
+    h = hashlib.sha256()
+    for s in sequences:
+        h.update(s.encode('utf-8'))
+        h.update(b'|')
+    return h.hexdigest(), aka_hands, total_hands
+
+
+def check_p_enrich(buf: StringIO):
+    """(17) Stage2 配牌 rejection sampling: exact repro at p=0, 100% at p=1,
+    natural rate at p=0 (record only), eval-side config dump p_enrich=0."""
+    log('(17) Stage2 p_enrich rejection sampling', buf)
+
+    # (a) p_enrich=0.0 must exactly reproduce the pre-Stage2 golden hashes
+    # (deterministic haipai, no RNG stream desync from the short-circuit).
+    total_aka = 0
+    total_hands = 0
+    for seed_base, golden_hash in _P_ENRICH_GOLDEN.items():
+        digest, aka_hands, hands = _run_p_enrich_selfplay(seed_base, 0.0)
+        assert digest == golden_hash, (
+            f'p_enrich=0.0 haipai hash mismatch for seed_base={seed_base}: '
+            f'{digest} != {golden_hash}'
+        )
+        total_aka += aka_hands
+        total_hands += hands
+    log(
+        f'  (a) PASS: p_enrich=0.0 haipai hash == golden for '
+        f'{sorted(_P_ENRICH_GOLDEN)}',
+        buf,
+    )
+
+    # (c) natural (p_enrich=0.0) aka>=1 rate — record only, ~25% expected.
+    natural_rate = total_aka / total_hands
+    log(
+        f'  (c) natural aka>=1 rate = {natural_rate:.4f} '
+        f'({total_aka}/{total_hands} hands, ~25% expected)',
+        buf,
+    )
+
+    # (b) p_enrich=1.0 -> trainee aka>=1 rate must be exactly 100%.
+    total_aka_e = 0
+    total_hands_e = 0
+    for seed_base in _P_ENRICH_GOLDEN:
+        _, aka_hands, hands = _run_p_enrich_selfplay(seed_base, 1.0)
+        total_aka_e += aka_hands
+        total_hands_e += hands
+    assert total_aka_e == total_hands_e, (
+        f'p_enrich=1.0 aka rate {total_aka_e}/{total_hands_e} != 100%'
+    )
+    log(f'  (b) PASS: p_enrich=1.0 aka>=1 rate = 100% ({total_hands_e} hands)', buf)
+
+    # (d) eval-side engine config dump must always show p_enrich=0, even
+    # when the underlying checkpoint/config would otherwise enrich training.
+    eval_dump = dump_engine_config(
+        build_production_trainee_engine(
+            Brain(version=4, conv_channels=192, num_blocks=40).eval(),
+            ActorCritic(version=4, tau=1.0).eval(),
+            version=4,
+            device=torch.device('cpu'),
+            # p_enrich intentionally omitted: eval call sites never pass it.
+        ),
+    )
+    assert eval_dump['p_enrich'] == 0.0, f"eval dump p_enrich={eval_dump['p_enrich']} != 0.0"
+    log(f"  (d) PASS: eval engine config dump p_enrich={eval_dump['p_enrich']}", buf)
+
+    log('  PASS: Stage2 p_enrich rejection sampling (17)', buf)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', default=DEFAULT_CKPT)
@@ -1189,9 +1343,10 @@ def main():
     check_reward_placement_e2e(args.checkpoint, args.grp_state, buf)
     check_daiminkan_direct_path(args.checkpoint, args.grp_state, buf)
     check_optimizer_resume(buf)
+    check_p_enrich(buf)
 
     log('', buf)
-    log('ALL 16 CHECKS PASSED', buf)
+    log('ALL 17 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0
