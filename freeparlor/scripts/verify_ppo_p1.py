@@ -641,6 +641,58 @@ def _count_end_kyoku_events(log_path: str) -> int:
     return count
 
 
+# mjai event types that carry an `actor` and represent a trainee decision
+# point (discard, naki, reach, agari). Used to distinguish a genuine missing
+# trajectory step (recording bug) from a kyoku where the trainee seat never
+# got a chance to act at all (e.g. an opponent's kyuushukyuuhai abortive draw
+# on their own first turn).
+_TRAINEE_REACTION_TYPES = frozenset({
+    'tsumo', 'dahai', 'chi', 'pon', 'daiminkan', 'kakan', 'ankan',
+    'reach', 'reach_accepted', 'hora',
+})
+
+
+def _scan_kyoku_trainee_activity(log_path: str, trainee_seat: int):
+    """Per-kyoku (in log order, 0-indexed) scan of trainee reaction activity.
+
+    Returns a list of (has_trainee_event: bool, end_event_types: list[str])
+    tuples, one per kyoku, where end_event_types are the 'hora'/'ryukyoku'
+    event types observed before that kyoku's end_kyoku.
+    """
+    import gzip
+    import json
+
+    kyoku_list = []
+    in_kyoku = False
+    has_trainee_event = False
+    end_types: list[str] = []
+    with gzip.open(log_path, 'rt', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            ev_type = ev.get('type')
+            if ev_type == 'start_kyoku':
+                in_kyoku = True
+                has_trainee_event = False
+                end_types = []
+                continue
+            if not in_kyoku:
+                continue
+            if ev_type in ('hora', 'ryukyoku'):
+                end_types.append(ev_type)
+            if ev_type in _TRAINEE_REACTION_TYPES and ev.get('actor') == trainee_seat:
+                has_trainee_event = True
+            if ev_type == 'end_kyoku':
+                kyoku_list.append((has_trainee_event, list(end_types)))
+                in_kyoku = False
+    return kyoku_list
+
+
 def _expected_rewards_from_log(
     log_path: str,
     *,
@@ -779,14 +831,39 @@ tau_init = 1.0
 
             end_kyoku = _count_end_kyoku_events(log_path)
             done_count = int(batch.done.sum().item())
-            assert done_count == end_kyoku, (
-                f'{game_key}: sum(done)={done_count} != end_kyoku={end_kyoku}'
-            )
 
             at_kyoku = batch.at_kyoku.cpu().numpy().astype(np.int64)
-            assert at_kyoku.max() + 1 == len(np.unique(at_kyoku)), (
-                f'{game_key}: at_kyoku not consecutive (max={at_kyoku.max()}, '
-                f'unique={len(np.unique(at_kyoku))})'
+            assert at_kyoku.min() >= 0 and at_kyoku.max() < end_kyoku, (
+                f'{game_key}: at_kyoku out of range (min={at_kyoku.min()}, '
+                f'max={at_kyoku.max()}, end_kyoku={end_kyoku})'
+            )
+            present_kyoku = set(np.unique(at_kyoku).tolist())
+            missing_kyoku = sorted(set(range(end_kyoku)) - present_kyoku)
+
+            if missing_kyoku:
+                split = game_key.rsplit('_', 1)[-1]
+                trainee_seat = {'a': 0, 'b': 1, 'c': 2, 'd': 3}.get(split)
+                assert trainee_seat is not None, f'unknown split in {game_key}'
+                activity = _scan_kyoku_trainee_activity(log_path, trainee_seat)
+                assert len(activity) == end_kyoku, (
+                    f'{game_key}: kyoku scan mismatch len(activity)={len(activity)} '
+                    f'!= end_kyoku={end_kyoku}'
+                )
+                for k in missing_kyoku:
+                    has_trainee_event, end_types = activity[k]
+                    assert not has_trainee_event, (
+                        f'{game_key}: kyoku {k} missing from at_kyoku but has trainee '
+                        f'reaction events (genuine recording bug, not a zero-step kyoku)'
+                    )
+                    reason = '+'.join(end_types) if end_types else 'unknown'
+                    log(
+                        f'  (14) accepted trainee-zero-step kyoku={k} reason={reason}',
+                        buf,
+                    )
+
+            assert done_count == len(present_kyoku), (
+                f'{game_key}: sum(done)={done_count} != len(unique(at_kyoku))='
+                f'{len(present_kyoku)}'
             )
 
             for kyoku in np.unique(at_kyoku):
