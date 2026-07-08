@@ -10,6 +10,12 @@ REPO="/home/gamba/mahjong/Mortal"
 RUN_DIR="${RUN_DIR:-/home/gamba/mahjong/runs/ppo/stage1_20260706_020120_resume}"
 CFG="$RUN_DIR/config.toml"
 INIT_CKPT="/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth"
+# GRP_BASELINE_CKPT デフォルト: beta1_huber_192x40/mortal.pth (2026-07-08 変更)。
+# grp_baseline.pth は steps=0 の配管 fixture であり強さ測定に使用禁止
+# (2026-07-08 判明: 無差別副露・fuuro 89%。検定(9)は配管回帰なので
+# 壊れたモデルでも PASS し続けており、素性がどこにも文書化されて
+# いなかったため誤用された。詳細は supervisor_handbook.md §4c 参照)。
+export GRP_BASELINE_CKPT="${GRP_BASELINE_CKPT:-$INIT_CKPT}"
 RESULTS_DIR="$RUN_DIR/logs/eval_grp_baseline"
 mkdir -p "$RESULTS_DIR"
 
