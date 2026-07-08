@@ -24,6 +24,15 @@ if ss -tlnp 2>/dev/null | grep -q 5000; then
 fi
 echo "port 5000 clear"
 
+if nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | grep -q '[0-9]'; then
+  echo "ERROR: GPU compute processes still running (single-stream rule)" >&2
+  nvidia-smi
+  exit 1
+fi
+echo "GPU idle"
+
+"$REPO/freeparlor/scripts/preflight_libriichi.sh" "$REPO"
+
 declare -A LABELS
 LABELS=(
   [init]="$INIT_CKPT"
