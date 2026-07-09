@@ -2,7 +2,7 @@
 
 > **このドキュメントの目的**: Mortalフリー雀荘AIプロジェクトの設計・監督業務を引き継ぐClaude(以下「監督Claude」)が、過去の確定知見・ワークフロー規律・死んだ仮説を再学習なしで引き継ぐためのもの。設計相談セッションの冒頭で必ずこのファイルを読み込むこと。
 >
-> 配置先: `freeparlor/docs/supervisor_handbook.md`
+> 配置先: `freeparlor/docs/ops/supervisor_handbook.md`
 > 最終更新: 2026-07-07 (Stage1判定完了・Stage2設計commit済み時点)
 
 ---
@@ -29,9 +29,9 @@
 - **位置づけ**: 知見抽出とreward設計の研究用。AGPL制約のため商用実装は別途独立して行う予定。
 - **現行アーキテクチャ方針**: 教師データ完全排除、self-playベースのPPO(旧: DQN+CQL+教師データパイプラインからの移行)。
 - **設計文書の正**:
-  - `freeparlor/docs/ppo_migration_design.md` — 設計フォークの結論の集約先
-  - `freeparlor/docs/stage2_design.md` — 現行run(Stage2)の設計と事前登録済み判定条件
-  - `freeparlor/docs/ppo_p3_stage1_result.md` — Stage1判定結果(§4aの一次ソース)
+  - `freeparlor/docs/design/ppo_migration_design.md` — 設計フォークの結論の集約先
+  - `freeparlor/docs/design/stage2_design.md` — 現行run(Stage2)の設計と事前登録済み判定条件
+  - `freeparlor/docs/reports/ppo_p3_stage1_result.md` — Stage1判定結果(§4aの一次ソース)
 
 ## 2. 役割分担
 
