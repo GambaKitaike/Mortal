@@ -3,16 +3,17 @@
 生成日: 2026-07-10。フォルダ再編（design / reports / ops / archive/dqn）に伴う索引。
 ステータスは判断根拠が明確なもののみ厳密。曖昧なものは本文参照を推奨。
 
-## design/ — 設計・pre-registration（4本）
+## design/ — 設計・pre-registration（5本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
 | `design/ppo_migration_design.md` | 2026-07-04 | active | PPO移行の設計正典。教師データ非依存本線の実装設計（critic scale・希少性探索の分岐を含む）。 |
-| `design/stage2_design.md` | 2026-07-09 | active | Stage2（配牌rejection samplingによる赤濃縮）の設計・事前登録済み判定条件。現行runの判定窓が閉じるまで凍結対象。 |
+| `design/stage2_design.md` | 2026-07-09 | closed | Stage2（配牌rejection samplingによる赤濃縮）の設計・事前登録済み判定条件。判定完了（2026-07-11、分岐2成立 → `reports/ppo_p3_stage2_result.md`）。 |
+| `design/stage3_design.md` | 2026-07-11 | active | Stage3（anneal付きper-decision鳴きボーナス）の設計・事前登録済み判定条件。実装・発進は未着手。 |
 | `design/reward_design_teacherfree.md` | 2026-07-02 | active | 教師データ非依存の報酬設計（あ）確定版。reward_audit を受けた本線設計。 |
 | `design/reward_audit_teacherfree.md` | 2026-07-02 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
 
-## reports/ — PPO時代の確定レポート・run記録（9本）
+## reports/ — PPO時代の確定レポート・run記録（10本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
@@ -25,6 +26,7 @@
 | `reports/ppo_p3_pause_resume.md` | 2026-07-06 | closed | PPO P3 run #7のpause/resume記録。 |
 | `reports/ppo_p3_stage1.md` | 2026-07-07 | closed | PPO P3 Stage1本走のrun状態・インシデント史。 |
 | `reports/ppo_p3_stage1_result.md` | 2026-07-08 | closed | PPO P3 Stage1判定結果（立直マキシマリズム、事前固定条件成立→Stage2移行確定）。 |
+| `reports/ppo_p3_stage2_result.md` | 2026-07-11 | closed | PPO P3 Stage2 evalバッテリー+判定結果（分岐2成立、機会費用仮説支持・配備税7c発見→Stage3解封）。 |
 
 ## ops/ — 運用文書（4本）
 
