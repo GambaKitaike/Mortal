@@ -12,6 +12,7 @@ from config import config
 from libriichi.stat import Stat
 from model import ActorCritic, Brain, load_ppo_from_mortal_checkpoint
 from player import TestPlayer
+from ppo_engine import dump_engine_config
 
 
 class FlushingFileHandler(logging.FileHandler):
@@ -77,6 +78,19 @@ def main():
     ac = ActorCritic(version=version, tau=config['ppo']['tau_init']).to(device).eval()
     ckpt_steps = load_checkpoint(state_file, mortal, ac, device)
     log.info('checkpoint ロード完了: steps=%s', ckpt_steps)
+
+    # 構成 dump（診断専用の使い捨てengine。tp.test_play_ppo が内部で
+    # 構築する engine と同一 kwargs — player.py:_make_ppo_eval_engine
+    # 参照）。p_enrich が eval 経路で常時 0 であることをここで assert する
+    # (stage2_design.md §2)。
+    from eval_grp_baseline_1v3 import build_challenger_engine
+    _diag_engine, _ = build_challenger_engine(state_file, device, name='mortal')
+    diag_cfg = dump_engine_config(_diag_engine)
+    log.info('eval engine config dump: %s', diag_cfg)
+    assert diag_cfg['p_enrich'] == 0.0, 'eval 経路は p_enrich=0 必須'
+    assert diag_cfg['eval_mode'] is True, 'eval 経路は argmax (eval_mode=True) 必須'
+    assert diag_cfg['enable_rule_based_agari_guard'] is True, 'eval 経路は guard ON 必須'
+    del _diag_engine
 
     tp = TestPlayer()
     log.info('arena 起動: %d hanchans (%d局ずつ進捗ログ)', total_hanchans, batch_size)

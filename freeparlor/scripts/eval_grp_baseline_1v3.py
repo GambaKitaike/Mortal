@@ -62,14 +62,17 @@ def setup_logging(log_path: Path) -> logging.Logger:
     return logger
 
 
-def build_challenger_engine(state_file: Path, device: torch.device) -> tuple[PPOEngine, int]:
-    """challenger = EVAL_CHECKPOINT の PPO checkpoint。
+def build_challenger_engine(
+    state_file: Path, device: torch.device, name: str = 'challenger',
+) -> tuple[PPOEngine, int]:
+    """PPO checkpoint から eval 用 PPOEngine を構築する（名称は name で指定）。
 
     エンジン構成は eval_ppo_smoke_sanity.py の eval 経路
     (player.py:TestPlayer._make_ppo_eval_engine と同一 kwargs) に揃える:
     enable_amp=False, enable_quick_eval=False,
     enable_rule_based_agari_guard=True (guard ON),
     eval_mode=True (argmax), record_trajectory=False。
+    p_enrich は未指定=PPOEngine 既定の 0.0（eval 経路は常時自然分布）。
     """
     version = config['control']['version']
     mortal = Brain(version=version, **config['resnet']).to(device).eval()
@@ -85,7 +88,7 @@ def build_challenger_engine(state_file: Path, device: torch.device) -> tuple[PPO
         enable_amp=False,
         enable_quick_eval=False,
         enable_rule_based_agari_guard=True,
-        name='challenger',
+        name=name,
         eval_mode=True,
         record_trajectory=False,
     )
