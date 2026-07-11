@@ -18,6 +18,15 @@ export CONFIG_TAG="stage3_${RUN_SUFFIX}"
 export TMUX_SESSION="${TMUX_SESSION:-ppo_stage3_${RUN_SUFFIX}}"
 MAX_STEPS="${MAX_STEPS:-16000}"
 
+RUNS_ROOT="/home/gamba/mahjong/runs"
+DISK_MIN_GB="${DISK_MIN_GB:-450}"
+AVAIL_GB=$(df -BG --output=avail "$RUNS_ROOT" | tail -n1 | tr -dc '0-9')
+if [ "$AVAIL_GB" -lt "$DISK_MIN_GB" ]; then
+  echo "FATAL: available disk on $RUNS_ROOT is ${AVAIL_GB}G, below DISK_MIN_GB=${DISK_MIN_GB}G (stage3_design.md §8: 2026-07-09 disk exhaustion incident prevention)" >&2
+  exit 1
+fi
+echo "disk check passed: ${AVAIL_GB}G available on $RUNS_ROOT (>= ${DISK_MIN_GB}G)"
+
 PLACEHOLDER="stage3_PENDING_LAUNCH"
 RESOLVED="stage3_${RUN_SUFFIX}"
 
