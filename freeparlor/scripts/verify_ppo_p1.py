@@ -29,7 +29,17 @@ from model import (
     load_actor_critic_from_dqn_checkpoint,
     load_ppo_from_mortal_checkpoint,
 )
-from ppo import compose_kyoku_reward, compute_gae, masked_softmax, action_log_probs
+from ppo import (
+    AKA_OBS_ROWS,
+    CALL_ACTION_MAX,
+    CALL_ACTION_MIN,
+    action_log_probs,
+    apply_call_bonus,
+    call_bonus_coeff,
+    compose_kyoku_reward,
+    compute_gae,
+    masked_softmax,
+)
 from ppo_engine import (
     PPOEngine,
     build_production_trainee_engine,
@@ -1382,9 +1392,111 @@ def check_p_enrich(buf: StringIO):
         ),
     )
     assert eval_dump['p_enrich'] == 0.0, f"eval dump p_enrich={eval_dump['p_enrich']} != 0.0"
-    log(f"  (d) PASS: eval engine config dump p_enrich={eval_dump['p_enrich']}", buf)
+    # Stage3 (18c): eval 経路の非汚染 assert を p_enrich と同居させる
+    # (stage3_design.md §7). エンジンは call_bonus_b 属性を持たないので
+    # dump は常に 0.0 でなければならない。
+    assert eval_dump['call_bonus_b'] == 0.0, (
+        f"eval dump call_bonus_b={eval_dump['call_bonus_b']} != 0.0"
+    )
+    log(
+        f"  (d) PASS: eval engine config dump p_enrich={eval_dump['p_enrich']} "
+        f"call_bonus_b={eval_dump['call_bonus_b']}",
+        buf,
+    )
 
     log('  PASS: Stage2 p_enrich rejection sampling (17)', buf)
+
+
+def check_call_bonus(buf: StringIO):
+    """(18) Stage3 anneal 付き鳴きボーナス (stage3_design.md §2/§7):
+    (a) OFF 不変性, (b) 配置の正確性 + schedule 境界値。
+    (c) eval 構成 dump の call_bonus_b=0 assert は (17d) に同居。"""
+    log('(18) Stage3 call bonus (anneal per-decision)', buf)
+
+    # (a) OFF invariance: b_now=0.0 must return the input rewards tensor
+    # itself (no copy, no add), and the key-absent default schedule
+    # (b=0.0, 0, 0) must be identically 0.0 at any step.
+    torch.manual_seed(20260711)
+    n = 64
+    c, w = obs_shape(4)
+    rewards = torch.randn(n)
+    obs = torch.randn(n, c, w)
+    masks = torch.zeros(n, ACTION_SPACE, dtype=torch.bool)
+    for i in range(n):
+        legal = torch.randperm(ACTION_SPACE)[:8]
+        masks[i, legal] = True
+    masks[: n // 2, CALL_ACTION_MIN:CALL_ACTION_MAX + 1] = True
+    actions = torch.randint(0, ACTION_SPACE, (n,))
+    actions[: n // 4] = CALL_ACTION_MIN  # guarantee qualifying rows exist
+
+    rewards_before = rewards.clone()
+    out, n_sel_off = apply_call_bonus(rewards, obs, masks, actions, 0.0)
+    assert out is rewards, 'b_now=0.0 must return the input rewards tensor object'
+    assert torch.equal(out, rewards_before), 'b_now=0.0 mutated rewards'
+    assert n_sel_off >= n // 4, (
+        f'synthetic batch has too few qualifying rows ({n_sel_off}), test is vacuous'
+    )
+    for step in (0, 1, 200, 3999, 4000, 8000, 16000, 10**9):
+        coeff = call_bonus_coeff(step, 0.0, 0, 0)
+        assert coeff == 0.0, f'key-absent default coeff({step})={coeff} != 0.0'
+    log(
+        f'  (a) PASS: b_now=0.0 returns input tensor object bit-identical '
+        f'(n_sel={n_sel_off}); key-absent default schedule ≡ 0.0',
+        buf,
+    )
+
+    # (b) placement: 4-class synthetic batch — only class ① (call possible ∧
+    # aka held ∧ call taken) gets +b, everything else stays bit-identical.
+    b_now = 5.0
+    n4 = 9
+    obs4 = torch.zeros(n4, c, w)
+    masks4 = torch.zeros(n4, ACTION_SPACE, dtype=torch.bool)
+    masks4[:, 0] = True  # a legal non-call action on every row
+    actions4 = torch.zeros(n4, dtype=torch.int64)
+    rewards4 = torch.arange(n4, dtype=torch.float32)
+
+    # ① rows 0-2: call possible ∧ aka held ∧ call taken
+    for i, a in zip(range(3), (CALL_ACTION_MIN, 40, CALL_ACTION_MAX)):
+        masks4[i, CALL_ACTION_MIN:CALL_ACTION_MAX + 1] = True
+        obs4[i, AKA_OBS_ROWS, 0] = 1.0
+        actions4[i] = a
+    # ② rows 3-4: call possible ∧ aka held ∧ declined (non-call action)
+    for i in (3, 4):
+        masks4[i, CALL_ACTION_MIN:CALL_ACTION_MAX + 1] = True
+        obs4[i, AKA_OBS_ROWS, 0] = 1.0
+        actions4[i] = 0
+    # ③ rows 5-6: call possible ∧ no aka ∧ call taken
+    for i in (5, 6):
+        masks4[i, CALL_ACTION_MIN:CALL_ACTION_MAX + 1] = True
+        actions4[i] = 39
+    # ④ rows 7-8: call not possible (mask 38..42 all False)
+    actions4[7] = 0
+    actions4[8] = 0
+
+    rewards4_before = rewards4.clone()
+    out4, n_applied = apply_call_bonus(rewards4, obs4, masks4, actions4, b_now)
+    expected4 = rewards4_before.clone()
+    expected4[:3] += b_now
+    assert torch.equal(out4, expected4), (
+        f'placement mismatch: got {out4.tolist()} expected {expected4.tolist()}'
+    )
+    assert n_applied == 3, f'n_applied={n_applied} != 3 (class-① count)'
+    assert torch.equal(rewards4, rewards4_before), 'input rewards mutated at b_now>0'
+    log(
+        f'  (b) PASS: class ① only +{b_now}, classes ②③④ bit-identical, '
+        f'n_applied={n_applied}',
+        buf,
+    )
+
+    # (b) schedule boundary values (b=5.0, full_until=4000, zero_at=8000).
+    schedule_expect = {0: 5.0, 3999: 5.0, 4000: 5.0, 6000: 2.5, 8000: 0.0, 16000: 0.0}
+    for step, want in schedule_expect.items():
+        got = call_bonus_coeff(step, 5.0, 4000, 8000)
+        assert got == want, f'coeff({step})={got} != {want}'
+    log(f'  (b) PASS: schedule boundaries {schedule_expect}', buf)
+
+    log('  (c) eval config dump call_bonus_b=0.0 asserted in (17d)', buf)
+    log('  PASS: Stage3 call bonus (18)', buf)
 
 
 def main():
@@ -1421,9 +1533,10 @@ def main():
     check_daiminkan_direct_path(args.checkpoint, args.grp_state, buf)
     check_optimizer_resume(buf)
     check_p_enrich(buf)
+    check_call_bonus(buf)
 
     log('', buf)
-    log('ALL 17 CHECKS PASSED', buf)
+    log('ALL 18 CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0

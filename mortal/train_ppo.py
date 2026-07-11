@@ -19,7 +19,19 @@ def train_ppo():
     from config import config
     from model import ActorCritic, Brain, load_ppo_from_mortal_checkpoint
     from player import TestPlayer
-    from ppo import action_log_probs, compute_gae, masked_softmax, normalize_advantages, ppo_loss
+    from ppo import (
+        AKA_OBS_ROWS,
+        CALL_ACTION_MAX,
+        CALL_ACTION_MIN,
+        RIICHI_ACTION,
+        action_log_probs,
+        apply_call_bonus,
+        call_bonus_coeff,
+        compute_gae,
+        masked_softmax,
+        normalize_advantages,
+        ppo_loss,
+    )
     from ppo_dataloader import collate_trajectory_batches, load_trajectory_file
     from ppo_transport import TrajectoryBatch
 
@@ -38,6 +50,12 @@ def train_ppo():
     eps_clip = ppo_cfg['eps_clip']
     ppo_epochs = ppo_cfg.get('ppo_epochs', 1)
     minibatch_size = ppo_cfg.get('minibatch_size', 0)
+    # Stage3 anneal 付き鳴きボーナス (stage3_design.md §2)。キー不在時の
+    # 0.0/0/0 は「設計された OFF」(Stage1/2 config はボーナス無し) であり、
+    # サイレントフォールバックではない。
+    call_bonus_b = ppo_cfg.get('call_bonus_b', 0.0)
+    call_bonus_full_until_step = ppo_cfg.get('call_bonus_full_until_step', 0)
+    call_bonus_zero_at_step = ppo_cfg.get('call_bonus_zero_at_step', 0)
     diag_log_path = Path(config['control']['state_file']).parent / 'logs' / 'ppo_diag.jsonl'
     diag_log_path.parent.mkdir(parents=True, exist_ok=True)
     trainer_param_version = 0
@@ -165,11 +183,6 @@ def train_ppo():
         record['trainer_step'] = steps
         with diag_log_path.open('a', encoding='utf-8') as f:
             f.write(json.dumps(record, ensure_ascii=False) + '\n')
-
-    CALL_ACTION_MIN = 38
-    CALL_ACTION_MAX = 42
-    RIICHI_ACTION = 37
-    AKA_OBS_ROWS = slice(4, 7)
 
     grp_calib_abs_err_sum = 0.0
     grp_calib_n = 0
@@ -302,6 +315,20 @@ def train_ppo():
         masks = traj.mask.to(device=device)
         logp_old = traj.logp_old.to(device=device)
         rewards = traj.reward.to(device=device)
+        # Stage3 鳴きボーナス (stage3_design.md §2): GAE/returns/advantage は
+        # ボーナス込みで計算される（これが仕様）。traj.reward_sotensu /
+        # reward_grp / reward_chip の正典3ストリームには触れない（分離ログの
+        # 非汚染維持）。b_now=0.0 のとき rewards はビット不変。
+        b_now = call_bonus_coeff(
+            steps, call_bonus_b, call_bonus_full_until_step, call_bonus_zero_at_step,
+        )
+        rewards, n_bonus = apply_call_bonus(rewards, obs, masks, actions, b_now)
+        _append_diag({
+            'event': 'call_bonus',
+            'b': b_now,
+            'n_applied': n_bonus,
+            'bonus_total': b_now * n_bonus,
+        })
         dones = traj.done.to(device=device)
         param_lag = trainer_param_version - traj.param_version
         _append_diag({

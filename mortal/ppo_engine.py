@@ -50,6 +50,11 @@ def dump_engine_config(engine) -> dict:
         # engines, which is intentionally equivalent to 0.0 (no-op) here and
         # on the Rust side (libriichi arena OneVsThree::py_vs_py).
         'p_enrich': getattr(engine, 'p_enrich', 0.0),
+        # Stage3 anneal 付き鳴きボーナス (stage3_design.md §2). The bonus is a
+        # trainer-side reward mechanism only — engines never carry this
+        # attribute, so it always dumps 0.0; the dump exists so verify can
+        # assert the eval path is never contaminated (check 17d / 18).
+        'call_bonus_b': float(getattr(engine, 'call_bonus_b', 0.0)),
     }
 
 

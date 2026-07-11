@@ -6,6 +6,14 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 
+# Action-space / obs-layout constants shared by the trainer instrumentation
+# (train_ppo.py) and the call-bonus helpers / verify checks below. Moved from
+# train_ppo.py unchanged so the definitions have a single source.
+CALL_ACTION_MIN = 38
+CALL_ACTION_MAX = 42
+RIICHI_ACTION = 37
+AKA_OBS_ROWS = slice(4, 7)
+
 
 def masked_softmax(logits: Tensor, mask: Tensor) -> Tensor:
     masked = logits.masked_fill(~mask, -torch.inf)
@@ -99,6 +107,45 @@ def ppo_loss(
         'value_loss': value_loss,
         'entropy': entropy,
     }
+
+
+def call_bonus_coeff(step: int, b: float, full_until_step: int, zero_at_step: int) -> float:
+    """Stage3 anneal 付き鳴きボーナスの係数 b(step) (stage3_design.md §2).
+
+    b == 0.0 (config キー不在の設計された OFF) では常に 0.0。それ以外は
+    [0, full_until_step) で b 一定、[full_until_step, zero_at_step) で
+    線形 anneal b→0、zero_at_step 以降は 0.0（正典報酬のみの判定窓）。
+    """
+    if b == 0.0:
+        return 0.0
+    if step < full_until_step:
+        return b
+    if step < zero_at_step:
+        return b * (zero_at_step - step) / (zero_at_step - full_until_step)
+    return 0.0
+
+
+def apply_call_bonus(
+    rewards: Tensor,
+    obs: Tensor,
+    masks: Tensor,
+    actions: Tensor,
+    b_now: float,
+) -> tuple[Tensor, int]:
+    """鳴き可能∧赤保持∧鳴き実行の decision step に b_now を加算 (stage3_design.md §2).
+
+    選択集合 sel の定義は既存計装 (train_ppo.py action_mass / advantage_decomp
+    の n_call_possible 系) と同一。b_now == 0.0 のときは入力 rewards テンソルを
+    そのまま返す (コピーも加算もしない — OFF 時ビット不変の保証)。
+    """
+    call_possible = masks[:, CALL_ACTION_MIN:CALL_ACTION_MAX + 1].any(dim=1)
+    aka_held = obs[:, AKA_OBS_ROWS, :].abs().sum(dim=(1, 2)) > 0
+    call_taken = (actions >= CALL_ACTION_MIN) & (actions <= CALL_ACTION_MAX)
+    sel = call_possible & aka_held & call_taken
+    n_applied = int(sel.sum())
+    if b_now == 0.0:
+        return rewards, n_applied
+    return rewards + b_now * sel.to(rewards.dtype), n_applied
 
 
 def compose_kyoku_reward(
