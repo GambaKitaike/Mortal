@@ -974,6 +974,7 @@ def check_daiminkan_direct_path(ckpt: str, grp_state: str, buf: StringIO):
     """(15) Deterministic daiminkan: no kan_select phase, action 42 direct execution."""
     import importlib
     import os
+    import shutil
 
     log(
         f'(15) daiminkan direct path — seed=({DAIMINKAN_VERIFY_SEED}, 0xBEEF) '
@@ -1055,31 +1056,60 @@ tau_init = 1.0
             name='trainee_clone', record_trajectory=False, eval_mode=True,
         )
 
-        env = OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
-        env.py_vs_py(
-            challenger=engine,
-            champion=champion,
-            seed_start=(DAIMINKAN_VERIFY_SEED, 0xBEEF),
-            seed_count=1,
+        # torch RNG (action sampling) is unseeded by the fixed game seed above, so
+        # whether the sampled policy ever reaches a trainee daiminkan varies run to
+        # run. Scan a fixed, bounded list of torch seeds deterministically instead
+        # of retrying blind (no silent skip: exhausting the list is a loud FAIL).
+        torch_seeds = range(20)
+        daiminkan_logs = None
+        file_list = None
+        hit_seed = None
+        for torch_seed in torch_seeds:
+            engine.daiminkan_forced = False
+            engine.pending_by_game = {}
+            engine.pending_steps = []
+            if log_dir.exists():
+                shutil.rmtree(log_dir)
+            log_dir.mkdir(parents=True)
+
+            torch.manual_seed(torch_seed)
+            env = OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
+            env.py_vs_py(
+                challenger=engine,
+                champion=champion,
+                seed_start=(DAIMINKAN_VERIFY_SEED, 0xBEEF),
+                seed_count=1,
+            )
+
+            if not engine.daiminkan_forced:
+                continue
+
+            candidate_files = sorted(str(p) for p in log_dir.glob('*.json.gz'))
+            if not candidate_files:
+                continue
+
+            candidate_daiminkan_logs = []
+            for log_path in candidate_files:
+                game_key = Path(log_path).name.replace('.json.gz', '')
+                split = game_key.rsplit('_', 1)[-1]
+                trainee_seat = {'a': 0, 'b': 1, 'c': 2, 'd': 3}.get(split)
+                assert trainee_seat is not None, f'unknown split in {game_key}'
+                n_daiminkan = _count_trainee_daiminkan(log_path, trainee_seat)
+                if n_daiminkan >= 1:
+                    candidate_daiminkan_logs.append((log_path, game_key, trainee_seat, n_daiminkan))
+
+            if candidate_daiminkan_logs:
+                daiminkan_logs = candidate_daiminkan_logs
+                file_list = candidate_files
+                hit_seed = torch_seed
+                break
+
+        assert daiminkan_logs, (
+            f'no game with trainee daiminkan in 4-split set after scanning '
+            f'torch seeds {list(torch_seeds)}'
         )
+        log(f'  stub forced action 42 at least once (hit on torch_seed={hit_seed})', buf)
 
-        assert engine.daiminkan_forced, 'stub never saw legal action 42 (daiminkan mask)'
-        log('  stub forced action 42 at least once', buf)
-
-        file_list = sorted(str(p) for p in log_dir.glob('*.json.gz'))
-        assert file_list, 'no json.gz logs produced'
-
-        daiminkan_logs = []
-        for log_path in file_list:
-            game_key = Path(log_path).name.replace('.json.gz', '')
-            split = game_key.rsplit('_', 1)[-1]
-            trainee_seat = {'a': 0, 'b': 1, 'c': 2, 'd': 3}.get(split)
-            assert trainee_seat is not None, f'unknown split in {game_key}'
-            n_daiminkan = _count_trainee_daiminkan(log_path, trainee_seat)
-            if n_daiminkan >= 1:
-                daiminkan_logs.append((log_path, game_key, trainee_seat, n_daiminkan))
-
-        assert daiminkan_logs, 'no game with trainee daiminkan in 4-split set'
         log_path, game_key, trainee_seat, n_daiminkan = daiminkan_logs[0]
         log(
             f'  daiminkan game={game_key} count={n_daiminkan} trainee_seat={trainee_seat}',
@@ -1537,7 +1567,7 @@ def main():
 
     log('', buf)
     log('ALL 18 CHECKS PASSED', buf)
-    out_path = ROOT / 'freeparlor' / 'docs' / 'ppo_p1_verify_log.txt'
+    out_path = ROOT / 'freeparlor' / 'docs' / 'reports' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0
 

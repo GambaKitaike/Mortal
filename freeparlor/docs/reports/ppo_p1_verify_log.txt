@@ -1,4 +1,4 @@
-PPO P1 sanity verification (re-run 2026-07-09T19:45:29+09:00)
+PPO P1 sanity verification (re-run 2026-07-11T13:20:33+09:00)
 checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
 online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 
@@ -17,7 +17,7 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 (6) legacy checkpoint load after chip head removal
   PASS: strict=False ignores chip_net; ActorCritic loads main heads
 (7) pure π sampling
-  TV distance=0.00862, illegal=0
+  TV distance=0.00274, illegal=0
   PASS: samples match softmax(masked logits), no illegal actions
 (8) online chip from log
   player_id=0 n_kyoku=8 nonzero_kyoku=3 sum=-5.0
@@ -25,32 +25,31 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 (9) DQN MortalEngine OneVsThree regression (1 hanchan)
   PASS: grp_baseline path, 1 hanchan, json.gz=4
 (10) train client engine config (guard OFF / eval_mode False / record_trajectory)
-  trainee dump: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0}
+  trainee dump: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0, 'call_bonus_b': 0.0}
   PASS: trainee guard=False eval_mode=False record_trajectory=True
 (11) opponent pool engine has no pending_steps
-  pool dump: {'name': 'opp_pool', 'engine_type': 'mortal', 'enable_amp': False, 'enable_quick_eval': True, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': None, 'tau': None, 'has_pending_steps': False, 'p_enrich': 0.0}
+  pool dump: {'name': 'opp_pool', 'engine_type': 'mortal', 'enable_amp': False, 'enable_quick_eval': True, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': None, 'tau': None, 'has_pending_steps': False, 'p_enrich': 0.0, 'call_bonus_b': 0.0}
   PASS: pool engine guard=False, no pending_steps / record_trajectory
 (12) pool engine resident cache logits parity (old load vs cache)
   PASS: step_000000.pth old-load ≡ resident cache (atol=1e-6)
   PASS: step_000001.pth old-load ≡ resident cache (atol=1e-6)
   PASS: pool cache logits parity for 2 checkpoints
 (13) trajectory join rate — single client ~52-game self-play
-  trainee config dump diff=empty: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0}
+  trainee config dump diff=empty: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0, 'call_bonus_b': 0.0}
   self-play seed_start=(90000, 0xBEEF)
-  games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=33
-  INFO: loader_delta=33 (non-fatal; runtime monitor only)
+  games=52 joined=52 key_missing=0 mismatch=0 orphan=0 loader_delta=25
+  INFO: loader_delta=25 (non-fatal; runtime monitor only)
   PASS: trajectory join rate 100%
 (14) reward placement e2e — single client 20-game self-play
-  trainee config dump diff=empty: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0}
+  trainee config dump diff=empty: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0, 'call_bonus_b': 0.0}
   self-play seed_start=(88000, 0xBEEF)
-  (14) accepted trainee-zero-step kyoku=12 reason=ryukyoku
   games=20 passed=20 end_kyoku/done/reward all OK
   PASS: reward placement e2e (14)
 (15) daiminkan direct path — seed=(1, 0xBEEF) action-42 stub
-  trainee config dump diff=empty: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0}
-  stub forced action 42 at least once
-  daiminkan game=1_48879_c count=1 trainee_seat=2
-  trajectory_steps=170 action42_present=True
+  trainee config dump diff=empty: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0, 'call_bonus_b': 0.0}
+  stub forced action 42 at least once (hit on torch_seed=0)
+  daiminkan game=1_48879_b count=1 trainee_seat=1
+  trajectory_steps=183 action42_present=True
   PASS: daiminkan direct path (15)
 (16) optimizer state resume (save → load → 1 step)
   real ckpt: step_010000.pth params=411 changed=411
@@ -60,7 +59,13 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
   (a) PASS: p_enrich=0.0 haipai hash == golden for [10000, 20000, 30000]
   (c) natural aka>=1 rate = 0.2544 (172/676 hands, ~25% expected)
   (b) PASS: p_enrich=1.0 aka>=1 rate = 100% (697 hands)
-  (d) PASS: eval engine config dump p_enrich=0.0
+  (d) PASS: eval engine config dump p_enrich=0.0 call_bonus_b=0.0
   PASS: Stage2 p_enrich rejection sampling (17)
+(18) Stage3 call bonus (anneal per-decision)
+  (a) PASS: b_now=0.0 returns input tensor object bit-identical (n_sel=18); key-absent default schedule ≡ 0.0
+  (b) PASS: class ① only +5.0, classes ②③④ bit-identical, n_applied=3
+  (b) PASS: schedule boundaries {0: 5.0, 3999: 5.0, 4000: 5.0, 6000: 2.5, 8000: 0.0, 16000: 0.0}
+  (c) eval config dump call_bonus_b=0.0 asserted in (17d)
+  PASS: Stage3 call bonus (18)
 
-ALL 17 CHECKS PASSED
+ALL 18 CHECKS PASSED
