@@ -5,7 +5,7 @@
 # tau_init=1.0, c_ent=0.01, eps_clip=0.2, ppo_epochs=4, max_steps=16000,
 # save_every=2000). init_checkpoint stays beta1_huber_192x40 (init).
 #
-# Run paths below use the placeholder `stage3_PENDING_LAUNCH`; the launcher
+# Run paths below use the placeholder `stage3_20260712_033403`; the launcher
 # freeparlor/scripts/run_ppo_stage3.sh substitutes the real `stage3_<日時>`
 # run dir in place at launch (mirroring run_ppo_stage2.sh). This file itself
 # must not be edited post-launch (frozen per pre-registration rule).
@@ -14,9 +14,9 @@
 version = 4
 online = true
 
-state_file = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/mortal.pth'
-best_state_file = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/best.pth'
-tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/tb'
+state_file = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/mortal.pth'
+best_state_file = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/best.pth'
+tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/tb'
 
 device = 'cuda:0'
 enable_cudnn_benchmark = false
@@ -57,27 +57,27 @@ call_bonus_zero_at_step = 8000
 
 [train_play.default]
 games = 800
-log_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/train_play/default'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/train_play/default'
 repeats = 1
 
 [train_play.client0]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/train_play/client0'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/train_play/client0'
 repeats = 1
 
 [train_play.client1]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/train_play/client1'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/train_play/client1'
 repeats = 1
 
 [train_play.client2]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/train_play/client2'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/train_play/client2'
 repeats = 1
 
 [test_play]
 games = 400
-log_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/test_play'
+log_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/test_play'
 self_play = true
 
 [dataset]
@@ -145,8 +145,8 @@ host = '127.0.0.1'
 port = 5000
 
 [online.server]
-buffer_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/buffer'
-drain_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/drain'
+buffer_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/buffer'
+drain_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/drain'
 sample_reuse_rate = 0
 sample_reuse_threshold = 0
 capacity = 1600
@@ -162,7 +162,7 @@ num_layers = 2
 [grp.control]
 device = 'cuda:0'
 enable_cudnn_benchmark = false
-tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage3_PENDING_LAUNCH/grp_log'
+tensorboard_dir = '/home/gamba/mahjong/runs/ppo/stage3_20260712_033403/grp_log'
 batch_size = 256
 save_every = 2000
 val_steps = 400
