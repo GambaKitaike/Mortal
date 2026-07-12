@@ -86,6 +86,8 @@ def main():
     assert baseline_dump['enable_rule_based_agari_guard'] is True, 'baseline guard must be ON'
     assert challenger_dump['p_enrich'] == 0.0, 'eval 経路の challenger は p_enrich=0 必須'
     assert baseline_dump['p_enrich'] == 0.0, 'eval 経路の baseline は p_enrich=0 必須'
+    assert challenger_dump['call_bonus_b'] == 0.0, 'eval 経路の challenger は call_bonus_b=0 必須'
+    assert baseline_dump['call_bonus_b'] == 0.0, 'eval 経路の baseline は call_bonus_b=0 必須'
     log.info('challenger steps=%s baseline steps=%s', challenger_steps, baseline_steps)
 
     # 座席ローテ仕様は eval_grp_baseline_1v3.py と同一

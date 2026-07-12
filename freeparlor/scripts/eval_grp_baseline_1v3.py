@@ -161,6 +161,8 @@ def main():
     assert challenger_dump['eval_mode'] is True, 'challenger must be argmax (eval_mode=True)'
     assert challenger_dump['enable_rule_based_agari_guard'] is True, 'challenger guard must be ON'
     assert baseline_dump['enable_rule_based_agari_guard'] is True, 'baseline guard must be ON'
+    assert challenger_dump['p_enrich'] == 0.0, 'challenger p_enrich must be 0 (eval 経路)'
+    assert challenger_dump['call_bonus_b'] == 0.0, 'challenger call_bonus_b must be 0 (eval 経路)'
     log.info('challenger steps=%s', ckpt_steps)
 
     # --- OneVsThree 席替え仕様（libriichi/src/arena/one_vs_three.rs で確認済み） ---
