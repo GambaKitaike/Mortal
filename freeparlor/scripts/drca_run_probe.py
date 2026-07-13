@@ -11,15 +11,25 @@ sidecar、drca_collect_branchpoints.py が RecordingPassthroughEngine で
   - no-call 腕: その鳴き機会だけをパス強制
 以降は全席、実チェックポイントによる素の π サンプリングで局終了まで進む。
 
-差し戻し修正 (監督側の独立再実行で判明): GameplayLoader 事後再構築 + 席解決
+差し戻し修正1 (監督側の独立再実行で判明): GameplayLoader 事後再構築 + 席解決
 (obs,mask 全席探索) は実クエリ列と 1:1 対応しなかった (at_kyoku>=1 で
 divergence)。本スクリプトはもう GameplayLoader を台本の情報源として使わず、
-sidecar に記録された (digest, action) の単一 FIFO キューを game_key ごとに
-消費する。物理席は問わない (どのクエリがどの席から来たかに関わらず、その
-game_key への問い合わせである限り同じキューを順に消費する) -- 採取時に
-実際に発生した合成クエリ順そのものが台本なので、席解決は不要かつ廃止。
-GameplayLoader は分岐点のメタデータ (at_kyoku/shanten/at_turn) と最終
-報酬計算にのみ使う (drca_collect_branchpoints.py と同じ用途限定)。
+sidecar に記録された (role, seq, digest, action) を消費する。GameplayLoader
+は分岐点のメタデータ (at_kyoku/shanten/at_turn) と最終報酬計算にのみ使う
+(drca_collect_branchpoints.py と同じ用途限定)。
+
+差し戻し修正2 (2度目、監督側の独立再実行で判明): sidecar を単一 FIFO として
+到着順に消費していたが、react_batch へのバッチ到着順は rayon::spawn の完了順
+に左右され実行ごとに変動する (libriichi/src/agent/mortal.rs) ため、到着順
+基準の FIFO index は再現性を持たない。台本再生は到着順に依存しない
+(role, seq) バケット + digest 照合に置き換えた: 各クエリはそれを発した
+ScriptedForkEngine の role ('challenger'/'champion') と step_meta の seq
+(スロット単位の決定論的連番) でバケットを引き、そのバケット内で digest が
+一致するエントリが厳密1件であることを assert して消費する (0件・複数件は
+loud FAIL、r2 guard の新形態)。challenger は 1 game に 1 slot のみなので
+(role, seq) だけで一意に定まるが、champion は 1 game に 3 slot 持ち各 slot
+の seq が独立に 0 起算のため同一 (role, seq) に最大3エントリが集まり得る --
+digest がその中から実際に問い合わせられた1件を特定する。
 
 新規 Rust 表面はゼロ。台本再生は純 Python ラッパー engine
 (ScriptedForkEngine) が react_batch を横取りして実現する。
@@ -33,8 +43,8 @@ set(b): 分岐点席のみ被測定 checkpoint、他3席は --reference-checkpoi
 各ロールアウトは実際には4スプリット (a/b/c/d) 全てが同時に再生されるが
 (OneVsThree の固定 API 制約)、分岐点の game_key と一致するスプリットのみを使う。
 
-決定論性の壊れ (r2) は「台本再生中に問い合わせが来た (obs, mask) の digest
-が記録列の次に消費すべき項目の digest と一致しない」場合に即座に loud FAIL
+決定論性の壊れ (r2) は「台本再生中に問い合わせが来た (role, seq, digest) が
+対応するバケット内のエントリと厳密1件で一致しない」場合に即座に loud FAIL
 する (--inject-fault-for-test でこの経路自体を実演できる)。
 """
 
@@ -59,6 +69,7 @@ from drca_common import (  # noqa: E402
     build_policy_engine,
     call_possible_aka_held,
     compute_kyoku_rewards,
+    find_unique_role_seq_match,
     legal_call_action_ids,
     load_script_sidecar,
     make_arena,
@@ -88,19 +99,27 @@ class ForkState:
     against one shared script, regardless of which of the two Rust-level
     agent objects (challenger / champion) happens to be asked.
 
-    The script is a single FIFO queue of (digest, action) recorded live
-    during collection (drca_collect_branchpoints.py's
-    RecordingPassthroughEngine) -- not a per-seat reconstruction. Physical
-    seat identity plays no role in matching; only queue order + digest
-    equality does, since that queue *is* the literal sequence of queries
-    that occurred for this game_key during collection.
+    The script is `script_buckets: dict[role] -> dict[seq] -> list[(digest,
+    action)]`, recorded live during collection
+    (drca_collect_branchpoints.py's RecordingPassthroughEngine), keyed by
+    (role, seq) rather than arrival order -- react_batch batch-arrival
+    order is not reproducible across runs (rayon::spawn completion order
+    in libriichi/src/agent/mortal.rs), but (role, seq) is deterministic
+    per physical slot regardless of scheduling. Each query is matched to
+    its recorded entry by (role, seq) bucket + exact digest equality
+    within that bucket (challenger has 1 slot/game so (role, seq) alone is
+    unique; champion has 3 slots/game with independently 0-based seq
+    counters, so a bucket can hold up to 3 entries, disambiguated by
+    digest).
     """
 
-    def __init__(self, *, target_game_key, script_queue, branch_index, arm, inject_fault=False):
+    def __init__(self, *, target_game_key, script_buckets, branch_role, branch_seq,
+                 branch_digest, arm, inject_fault=False):
         self.target_game_key = target_game_key
-        self.script_queue = script_queue  # list[(digest: str, action: int)]
-        self.branch_index = branch_index
-        self.consumed = 0
+        self.script_buckets = script_buckets  # dict[role] -> dict[seq] -> list[(digest, action)]
+        self.branch_role = branch_role
+        self.branch_seq = branch_seq
+        self.branch_digest = branch_digest
         self.arm = arm
         self.crossed_branch = False
         self.branch_served = False
@@ -111,43 +130,54 @@ class ForkState:
         self.branch_forced_action = None
         self.branch_call_options = None
 
-    def next_action_for(self, digest: str):
-        """Consume the next scripted entry for the target game_key's queue.
+    def next_action_for(self, role: str, seq: int, digest: str):
+        """Resolve one query against the recorded script.
 
         Returns the recorded action, or None if this decision *is* the
         flagged branch point (caller computes the forced/live branch
-        action). Raises loudly (no silent fallback) if `digest` doesn't
-        match the expected head-of-queue digest -- the r2
-        seed-determinism / prefix-replay-integrity guard.
+        action). Raises loudly (no silent fallback) if the (role, seq)
+        bucket is missing or empty, or if digest doesn't match exactly one
+        entry in that bucket -- the r2 seed-determinism /
+        prefix-replay-integrity guard, now order-independent.
         """
-        idx = self.consumed
-        if idx >= len(self.script_queue):
-            raise RuntimeError(
-                f'DRCA replay divergence in game_key={self.target_game_key}: '
-                f'script queue exhausted (len={len(self.script_queue)}) before '
-                'branch point was reached -- prefix determinism broken'
-            )
-        exp_digest, exp_action = self.script_queue[idx]
-        if digest != exp_digest:
-            raise RuntimeError(
-                f'DRCA replay divergence in game_key={self.target_game_key}: '
-                f'query digest {digest} != expected {exp_digest} at '
-                f'queue index={idx} -- this means the replayed wall/action '
-                'prefix no longer matches the recorded script (seed-determinism '
-                'assert failed)'
-            )
-        self.consumed = idx + 1
-        is_branch = not self.branch_served and idx == self.branch_index
+        is_branch = (
+            not self.branch_served
+            and role == self.branch_role
+            and seq == self.branch_seq
+            and digest == self.branch_digest
+        )
         if is_branch:
             self.branch_served = True
             self.crossed_branch = True
             return None
+
+        bucket = self.script_buckets.get(role, {}).get(seq)
+        if not bucket:
+            raise RuntimeError(
+                f'DRCA replay divergence in game_key={self.target_game_key}: '
+                f'no recorded script entries for role={role!r} seq={seq} -- '
+                'prefix determinism broken (bucket missing/empty)'
+            )
+        matches = [i for i, (d, _a) in enumerate(bucket) if d == digest]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f'DRCA replay divergence in game_key={self.target_game_key}: '
+                f'query digest {digest} matched {len(matches)} entries in '
+                f'role={role!r} seq={seq} bucket (expected exactly 1) -- this '
+                'means the replayed wall/action prefix no longer matches the '
+                'recorded script (seed-determinism assert failed)'
+            )
+        idx = matches[0]
+        exp_digest, exp_action = bucket.pop(idx)
+        assert exp_digest == digest
+
         if self.inject_fault and not self._fault_injected:
             self._fault_injected = True
             faulted = 0 if exp_action != 0 else 1
             logging.getLogger('drca_probe').warning(
-                'FAULT INJECTED (--inject-fault-for-test): idx=%d recorded_action=%d '
-                '-> returning %d instead', idx, exp_action, faulted,
+                'FAULT INJECTED (--inject-fault-for-test): role=%s seq=%d '
+                'recorded_action=%d -> returning %d instead',
+                role, seq, exp_action, faulted,
             )
             return faulted
         self.n_scripted_served += 1
@@ -232,8 +262,9 @@ class ScriptedForkEngine:
             if game_key != self.fork_state.target_game_key or self.fork_state.crossed_branch:
                 live_idx.append(i)
                 continue
+            seq = int(meta[1])
             digest = mask_obs_digest(obs_np[i], masks_np[i])
-            action = self.fork_state.next_action_for(digest)
+            action = self.fork_state.next_action_for(self.role, seq, digest)
             if action is None:
                 # this is the flagged branch decision itself
                 action = self._sample_branch_action(obs_np[i], masks_np[i])
@@ -270,25 +301,28 @@ def run_one_rollout(branch, arm, chal_engine, champ_engine, device, tmp_root, *,
     ForkState/wrapper objects below are created fresh per rollout, since
     those carry per-rollout mutable replay-consumption state).
     """
-    script_queue = load_script_sidecar(branch['script_path'])
-    branch_index = branch['script_index']
-    if branch_index >= len(script_queue):
+    script_buckets = load_script_sidecar(branch['script_path'])
+    branch_role = branch['branch_role']
+    branch_seq = branch['branch_seq']
+    branch_digest = branch['mask_obs_digest']
+
+    # Re-derive the (role, seq) match independently from the full sidecar
+    # (not just the recorded branch_role/branch_seq) and assert it agrees --
+    # catches sidecar corruption / index drift the same way
+    # drca_collect_branchpoints.py's find_unique_role_seq_match does at
+    # collection time.
+    found_role, found_seq = find_unique_role_seq_match(script_buckets, branch_digest)
+    if (found_role, found_seq) != (branch_role, branch_seq):
         raise RuntimeError(
-            f'branch_index={branch_index} beyond script sidecar length '
-            f'{len(script_queue)} for game_key={branch["game_key"]} '
-            f'(script_path={branch["script_path"]})'
-        )
-    sidecar_digest, _sidecar_action = script_queue[branch_index]
-    if sidecar_digest != branch['mask_obs_digest']:
-        raise RuntimeError(
-            f'branch point script sidecar mismatch for game_key={branch["game_key"]} '
-            f'script_index={branch_index}: sidecar digest {sidecar_digest} != '
-            f'recorded {branch["mask_obs_digest"]} (sidecar corrupted or index drift)'
+            f'branch point script sidecar mismatch for game_key={branch["game_key"]}: '
+            f'recorded branch_role/branch_seq=({branch_role!r}, {branch_seq}) but '
+            f're-derivation from sidecar found ({found_role!r}, {found_seq}) '
+            '(sidecar corrupted or branch metadata drift)'
         )
 
     # GameplayLoader used only for metadata / sel-definition-drift check
     # (drca_probe_design.md differential fix item 1) -- NOT as the replay
-    # script source (that's script_queue above, recorded live at collection).
+    # script source (that's script_buckets above, recorded live at collection).
     target_seat = branch['seat']
     target_local_index = branch['seat_local_index']
     seats = reconstruct_all_seats(branch['game_log_path'], branch['version'])
@@ -302,8 +336,10 @@ def run_one_rollout(branch, arm, chal_engine, champ_engine, device, tmp_root, *,
 
     fork_state = ForkState(
         target_game_key=branch['game_key'],
-        script_queue=script_queue,
-        branch_index=branch_index,
+        script_buckets=script_buckets,
+        branch_role=branch_role,
+        branch_seq=branch_seq,
+        branch_digest=branch_digest,
         arm=arm,
         inject_fault=inject_fault,
     )

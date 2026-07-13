@@ -168,23 +168,30 @@ def mask_obs_digest(obs: np.ndarray, mask: np.ndarray) -> str:
 
 
 class RecordingPassthroughEngine:
-    """react_batch 記録専用パススルー (differential-fix, drca_probe_design.md §2 の
-    r1/r2 是正: GameplayLoader 事後再構築は実 react_batch クエリ列と 1:1 対応しない
-    ことが判明したため、採取時に真のクエリ列そのものを記録する)。
+    """react_batch 記録専用パススルー (2度目の差し戻し修正、drca_probe_design.md §2 の
+    r1/r2 是正: 単一 FIFO 前提は libriichi/src/agent/mortal.rs の rayon::spawn 完了順
+    非決定論により崩れる (react_batch へのバッチ到着順が実行ごとに変わる) ため、
+    到着順に依存しない (game_key, role, seq) キーで記録する。
 
     live_engine.react_batch を呼び、その返り値をそのまま返す -- 挙動に一切介入
-    しない (採取分布の同一性維持)。副作用として、step_meta の game_key ごとに
-    (mask_obs_digest, action) を到着順に `store` (呼び出し元と共有する
-    dict[str, list[tuple[str, int]]]) へ追記する。この記録列が
-    drca_run_probe.py の台本再生でそのまま消費される「真の」クエリ列になる。
+    しない (採取分布の同一性維持)。副作用として、step_meta の
+    (game_key, seq, _, at_kyoku) タプルの seq (mortal.rs の step_seqs:
+    スロット単位の決定論的連番、クエリごとに +1、到着順とは無関係) を使い、
+    `store` (呼び出し元と共有する dict[str, dict[str, dict[int, list[tuple[str, int]]]]]、
+    game_key -> role -> seq -> [(digest, action), ...]) へ追記する。challenger は
+    1 game あたり 1 slot なので (game_key, 'challenger', seq) は unique。champion は
+    1 game あたり 3 slot を持ち各 slot の seq が独立に 0 起算なので、同一
+    (game_key, 'champion', seq) に最大3件 (異なる digest) が集まり得る --
+    そのため各バケットは list。
     """
 
     engine_type = 'mortal'
 
-    def __init__(self, live_engine, store: dict, *, name: str):
+    def __init__(self, live_engine, store: dict, *, name: str, role: str):
         self.live_engine = live_engine
         self.store = store
         self.name = name
+        self.role = role
         self.is_oracle = live_engine.is_oracle
         self.version = live_engine.version
         self.enable_quick_eval = live_engine.enable_quick_eval
@@ -203,28 +210,68 @@ class RecordingPassthroughEngine:
                 game_key = step_meta[i][0]
                 if not game_key:
                     continue
+                seq = int(step_meta[i][1])
                 digest = mask_obs_digest(np.asarray(obs[i]), np.asarray(masks[i]))
-                self.store.setdefault(game_key, []).append((digest, int(actions[i])))
+                bucket = (
+                    self.store.setdefault(game_key, {})
+                    .setdefault(self.role, {})
+                    .setdefault(seq, [])
+                )
+                bucket.append((digest, int(actions[i])))
         return actions, q_values, masks_out, is_greedy
 
 
-def write_script_sidecar(path, queue: list) -> None:
-    """queue: list[(digest: str, action: int)] -> jsonl, one {'digest','action'} per line."""
+def find_unique_role_seq_match(game_store: dict, digest: str) -> tuple[str, int]:
+    """当該 game_key の全 role・全 seq エントリから digest を検索し、一致が
+    厳密1件であることを assert して (role, seq) を返す (differential-fix
+    item 1)。0件・複数件は loud FAIL (silent resolution 禁止)。
+
+    game_store: dict[role] -> dict[seq] -> list[(digest, action)]
+    (RecordingPassthroughEngine.store[game_key] と同じ形)。
+    """
+    matches: list[tuple[str, int]] = []
+    for role, seqs in game_store.items():
+        for seq, entries in seqs.items():
+            for d, _a in entries:
+                if d == digest:
+                    matches.append((role, seq))
+    if len(matches) != 1:
+        raise RuntimeError(
+            f'digest {digest} matched {len(matches)} recorded query entries '
+            f'(expected exactly 1): matches={matches}'
+        )
+    return matches[0]
+
+
+def script_bucket_len(game_store: dict) -> int:
+    """Total recorded query count across all role/seq buckets for one game_key."""
+    return sum(len(entries) for seqs in game_store.values() for entries in seqs.values())
+
+
+def write_script_sidecar(path, game_store: dict) -> None:
+    """game_store: dict[role] -> dict[seq] -> list[(digest, action)] ->
+    jsonl, one {'role', 'seq', 'digest', 'action'} per line."""
     with open(path, 'w', encoding='utf-8') as f:
-        for digest, action in queue:
-            f.write(json.dumps({'digest': digest, 'action': action}) + '\n')
+        for role, seqs in game_store.items():
+            for seq, entries in seqs.items():
+                for digest, action in entries:
+                    f.write(json.dumps({
+                        'role': role, 'seq': seq, 'digest': digest, 'action': action,
+                    }) + '\n')
 
 
-def load_script_sidecar(path) -> list:
-    """Inverse of write_script_sidecar: jsonl -> list[(digest, action)]."""
-    out = []
+def load_script_sidecar(path) -> dict:
+    """Inverse of write_script_sidecar: jsonl -> dict[role] -> dict[seq] ->
+    list[(digest, action)] (file order preserved within each bucket)."""
+    out: dict = {}
     with open(path, encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             rec = json.loads(line)
-            out.append((rec['digest'], int(rec['action'])))
+            bucket = out.setdefault(rec['role'], {}).setdefault(int(rec['seq']), [])
+            bucket.append((rec['digest'], int(rec['action'])))
     return out
 
 
