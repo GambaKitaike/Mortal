@@ -1,0 +1,36 @@
+# DRCA プローブ (drca_probe_design.md §5a) — 静的サポート設定
+#
+# 学習 run の config ではない。drca_collect_branchpoints.py /
+# drca_run_probe.py / drca_aggregate.py が MORTAL_CFG 経由で読む
+# 共有パラメータのみを持つ（GRP モデル・resnet 構成・報酬合成係数・
+# control.version）。checkpoint パスは各スクリプトの CLI 引数で渡すため
+# ここには含めない。read-only・凍結対象外（実行のたびに書き換えない）。
+#
+# 値は freeparlor/configs/ppo_stage3.toml の同名セクションと同一
+# （version=4, resnet 192x40, grp/env 係数はStage1-3で不変の正典値）。
+
+[control]
+version = 4
+device = 'cuda:0'
+enable_cudnn_benchmark = false
+
+[ppo]
+tau_init = 1.0
+
+[env]
+pts = [35, 5, -15, -25]
+alpha = 1.0
+gamma_pt = 1.0
+beta = 1.0
+chip_value = 5.0
+
+[resnet]
+conv_channels = 192
+num_blocks = 40
+
+[grp]
+state_file = '/home/gamba/mahjong/runs/grp.pth'
+
+[grp.network]
+hidden_size = 64
+num_layers = 2
