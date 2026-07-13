@@ -8,7 +8,9 @@ seed (= 同一山、libriichi の wall RNG は shuffle 直後に破棄される�
 sidecar、drca_collect_branchpoints.py が RecordingPassthroughEngine で
 記録したもの) を分岐点まで台本として再生する (推論ゼロ)。分岐点で:
   - call 腕: legal な鳴き選択肢に π を制限して再正規化サンプリング
-  - no-call 腕: その鳴き機会だけをパス強制
+  - no-call 腕: legal な非鳴き選択肢 (合法 mask ∧ ¬[38..42]) に π を制限して
+    再正規化サンプリング (call 腕と対称。2026-07-13 amendment、
+    drca_probe_design.md §1)
 以降は全席、実チェックポイントによる素の π サンプリングで局終了まで進む。
 
 差し戻し修正1 (監督側の独立再実行で判明): GameplayLoader 事後再構築 + 席解決
@@ -64,7 +66,8 @@ from torch.distributions import Categorical
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from drca_common import (  # noqa: E402
-    DECLINE_ACTION,
+    CALL_ACTION_MAX,
+    CALL_ACTION_MIN,
     assert_construction_diff_empty,
     build_policy_engine,
     call_possible_aka_held,
@@ -220,26 +223,43 @@ class ScriptedForkEngine:
         return logits
 
     def _sample_branch_action(self, obs: np.ndarray, mask: np.ndarray) -> int:
-        """Live decision for the forced branch step. call arm: restrict pi
-        to the legal call subset [38,42] and renormalize-sample (preserves
-        the policy's relative preference among call options,
-        drca_probe_design.md §1). no-call arm: force DECLINE_ACTION.
+        """Live decision for the forced branch step (drca_probe_design.md
+        §1, 2026-07-13 amendment). call arm: restrict pi to the legal call
+        subset [38,42] and renormalize-sample (preserves the policy's
+        relative preference among call options). no-call arm: restrict pi
+        to the legal non-call subset (legal mask & ~[38,42]) and
+        renormalize-sample -- symmetric to the call arm. This reduces to
+        forcing DECLINE_ACTION(45) in the ordinary reaction case (pass is
+        the only legal non-call action there), but also covers own-turn
+        ankan/kakan opportunities (no pass action exists on the mask; the
+        original definition was inapplicable there per the amendment) and
+        ron-eligible reactions (ron is legal and non-call, so it is not
+        excluded -- ron is not counted against the call's opportunity cost).
         """
         mask_arr = np.asarray(mask)
         arm = self.fork_state.arm
+        obs_t = torch.as_tensor(np.asarray(obs)[None], device=self.device)
+        mask_t = torch.as_tensor(mask_arr[None], device=self.device, dtype=torch.bool)
+        logits = self._forward_logits(obs_t, mask_t)[0]
+
         if arm == 'no_call':
-            assert bool(mask_arr[DECLINE_ACTION]), (
-                f'no-call arm requires action {DECLINE_ACTION} (decline) to be legal, '
-                f'but mask says otherwise at the recorded branch point'
+            restricted_mask = mask_t[0].clone()
+            restricted_mask[CALL_ACTION_MIN:CALL_ACTION_MAX + 1] = False
+            assert bool(restricted_mask.any()), (
+                'no-call arm requires at least one legal non-call action in the mask, '
+                'but the mask has none outside the call action range '
+                f'[{CALL_ACTION_MIN},{CALL_ACTION_MAX}] at the recorded branch point'
             )
-            return DECLINE_ACTION
+            restricted = logits.float().masked_fill(~restricted_mask, -1e9)
+            action = int(Categorical(logits=restricted).sample().item())
+            assert bool(restricted_mask[action]), (
+                f'sampled no-call action {action} not in legal non-call subset'
+            )
+            return action
 
         assert arm == 'call', f'unknown arm {arm!r}'
         call_ids = legal_call_action_ids(mask_arr)
         assert call_ids, 'call arm requires at least one legal call action in the mask'
-        obs_t = torch.as_tensor(np.asarray(obs)[None], device=self.device)
-        mask_t = torch.as_tensor(mask_arr[None], device=self.device, dtype=torch.bool)
-        logits = self._forward_logits(obs_t, mask_t)[0]
         call_mask = torch.zeros_like(mask_t[0])
         for cid in call_ids:
             call_mask[cid] = True
