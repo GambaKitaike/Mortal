@@ -124,10 +124,15 @@ def call_type_label(call_types_available):
     return '+'.join(sorted(set(labels))) or 'none'
 
 
+def score_rank_label(rank):
+    return f'rank{rank}' if rank is not None else 'unknown'
+
+
 STRATIFIERS = {
     'shanten': lambda meta: shanten_bucket(meta.get('shanten')),
     'turn': lambda meta: turn_bucket(meta.get('at_turn')),
     'call_type': lambda meta: call_type_label(meta.get('call_types_available')),
+    'score_rank': lambda meta: score_rank_label(meta.get('score_rank_at_branch')),
 }
 
 
@@ -136,6 +141,9 @@ def main():
     ap.add_argument('--probe-out', required=True, nargs='+',
                      help='drca_run_probe.py の --out ファイル (複数可、set(a)/(b) 別ファイルを一括集計する場合など)')
     ap.add_argument('--out', default=None, help='JSON サマリの出力先 (省略時は標準出力のみ)')
+    ap.add_argument('--expect-branch-points', type=int, default=None,
+                     help='安全弁: 両腕揃った分岐点数がこれ未満なら FATAL exit 1 '
+                          '(省略時は検査なし)')
     args = ap.parse_args()
 
     rows = []
@@ -154,6 +162,7 @@ def main():
             'at_kyoku': r.get('at_kyoku'),
             'call_types_available': r.get('call_types_available'),
             'game_key': r.get('game_key'),
+            'score_rank_at_branch': r.get('score_rank_at_branch'),
         })
 
     deltas = []
@@ -167,6 +176,13 @@ def main():
         deltas.append(d)
 
     print(f'branch points with both arms present: {len(deltas)} / {len(grouped)}')
+
+    if args.expect_branch_points is not None and len(deltas) < args.expect_branch_points:
+        print(
+            f'FATAL: expected >= {args.expect_branch_points} branch points with both '
+            f'arms present, got {len(deltas)}', file=sys.stderr,
+        )
+        sys.exit(1)
 
     mean, se, n = weighted_mean_and_cluster_se(deltas)
     sign = sign_test(deltas)

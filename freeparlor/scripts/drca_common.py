@@ -13,6 +13,7 @@ drca_collect_branchpoints.py / drca_run_probe.py / drca_aggregate.py が
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 from dataclasses import dataclass, field
@@ -166,13 +167,94 @@ def mask_obs_digest(obs: np.ndarray, mask: np.ndarray) -> str:
     return h.hexdigest()[:16]
 
 
-def split_letter_for_seat(seat: int) -> str:
-    """OneVsThree::run_batch (libriichi/src/arena/one_vs_three.rs) fixes
-    challenger_player_id = seat index for split a/b/c/d in that exact
-    order (champion_player_ids_per_seed = [[1,2,3],[0,2,3],[0,1,3],[0,1,2]]
-    for splits a..d respectively). Deterministic, not something we choose.
+class RecordingPassthroughEngine:
+    """react_batch 記録専用パススルー (differential-fix, drca_probe_design.md §2 の
+    r1/r2 是正: GameplayLoader 事後再構築は実 react_batch クエリ列と 1:1 対応しない
+    ことが判明したため、採取時に真のクエリ列そのものを記録する)。
+
+    live_engine.react_batch を呼び、その返り値をそのまま返す -- 挙動に一切介入
+    しない (採取分布の同一性維持)。副作用として、step_meta の game_key ごとに
+    (mask_obs_digest, action) を到着順に `store` (呼び出し元と共有する
+    dict[str, list[tuple[str, int]]]) へ追記する。この記録列が
+    drca_run_probe.py の台本再生でそのまま消費される「真の」クエリ列になる。
     """
-    return ['a', 'b', 'c', 'd'][seat]
+
+    engine_type = 'mortal'
+
+    def __init__(self, live_engine, store: dict, *, name: str):
+        self.live_engine = live_engine
+        self.store = store
+        self.name = name
+        self.is_oracle = live_engine.is_oracle
+        self.version = live_engine.version
+        self.enable_quick_eval = live_engine.enable_quick_eval
+        self.enable_rule_based_agari_guard = live_engine.enable_rule_based_agari_guard
+        # p_enrich / call_bonus_b intentionally left undefined, same rationale
+        # as drca_run_probe.py:ScriptedForkEngine -- getattr fallback to 0.0.
+
+    def react_batch(self, obs, masks, invisible_obs, step_meta=None):
+        actions, q_values, masks_out, is_greedy = self.live_engine.react_batch(
+            obs, masks, invisible_obs, step_meta,
+        )
+        batch_size = len(actions)
+        use_keys = step_meta is not None and len(step_meta) == batch_size
+        if use_keys:
+            for i in range(batch_size):
+                game_key = step_meta[i][0]
+                if not game_key:
+                    continue
+                digest = mask_obs_digest(np.asarray(obs[i]), np.asarray(masks[i]))
+                self.store.setdefault(game_key, []).append((digest, int(actions[i])))
+        return actions, q_values, masks_out, is_greedy
+
+
+def write_script_sidecar(path, queue: list) -> None:
+    """queue: list[(digest: str, action: int)] -> jsonl, one {'digest','action'} per line."""
+    with open(path, 'w', encoding='utf-8') as f:
+        for digest, action in queue:
+            f.write(json.dumps({'digest': digest, 'action': action}) + '\n')
+
+
+def load_script_sidecar(path) -> list:
+    """Inverse of write_script_sidecar: jsonl -> list[(digest, action)]."""
+    out = []
+    with open(path, encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            out.append((rec['digest'], int(rec['action'])))
+    return out
+
+
+def kyoku_start_scores(log_path: str, version: int) -> np.ndarray:
+    """Per-kyoku starting scores for all 4 players, shape (n_kyoku, 4).
+
+    Derived from Grp.feature columns 3..7 (libriichi/src/dataset/grp.rs:
+    `[grand_kyoku, honba, kyotaku, score[i]/10000 for i in 0..4]`, absolute
+    per-seat scores at that kyoku's StartKyoku, identical regardless of
+    which player's Gameplay object it is read from). Used only for the
+    exploratory score-standing stratifier (drca_probe_design.md §5a-5,
+    4th item).
+    """
+    loader = GameplayLoader(
+        version=version, oracle=False, player_names=[],
+        always_include_kan_select=True,
+    )
+    games = loader.load_gz_log_files([str(log_path)])[0]
+    grp = games[0].take_grp()
+    feature = np.asarray(grp.take_feature())
+    return feature[:, 3:7] * 10000.0
+
+
+def score_rank(scores_at_kyoku_start: np.ndarray, player_id: int) -> int:
+    """1=top .. 4=bottom by descending score, ties broken by seat index
+    ascending. Not the official mahjong tie-break rule -- adequate for an
+    exploratory-only stratifier (drca_probe_design.md §5a-5).
+    """
+    order = sorted(range(4), key=lambda p: (-scores_at_kyoku_start[p], p))
+    return order.index(player_id) + 1
 
 
 def parse_game_key(game_key: str) -> tuple[int, int, str]:

@@ -1,27 +1,41 @@
 #!/usr/bin/env python3
-"""DRCA プローブ: fork-by-replay 並走ロールアウト (drca_probe_design.md §2/§3/§5a).
+"""DRCA プローブ: fork-by-replay 並走ロールアウト (drca_probe_design.md §2/§3/§5a)。
 
 分岐点 jsonl (drca_collect_branchpoints.py の出力) の各行について、同一
 seed (= 同一山、libriichi の wall RNG は shuffle 直後に破棄される決定論的
-挙動 -- board.rs 確認済み・drca_probe_design.md §2-1) を再走し、元ログの
-行動列を分岐点まで「台本」として4席分再生する (推論ゼロ)。分岐点で:
+挙動 -- board.rs 確認済み・drca_probe_design.md §2-1) を再走し、採取時に
+記録された「真の」react_batch クエリ列 (`<game_key>.script.jsonl`
+sidecar、drca_collect_branchpoints.py が RecordingPassthroughEngine で
+記録したもの) を分岐点まで台本として再生する (推論ゼロ)。分岐点で:
   - call 腕: legal な鳴き選択肢に π を制限して再正規化サンプリング
   - no-call 腕: その鳴き機会だけをパス強制
 以降は全席、実チェックポイントによる素の π サンプリングで局終了まで進む。
+
+差し戻し修正 (監督側の独立再実行で判明): GameplayLoader 事後再構築 + 席解決
+(obs,mask 全席探索) は実クエリ列と 1:1 対応しなかった (at_kyoku>=1 で
+divergence)。本スクリプトはもう GameplayLoader を台本の情報源として使わず、
+sidecar に記録された (digest, action) の単一 FIFO キューを game_key ごとに
+消費する。物理席は問わない (どのクエリがどの席から来たかに関わらず、その
+game_key への問い合わせである限り同じキューを順に消費する) -- 採取時に
+実際に発生した合成クエリ順そのものが台本なので、席解決は不要かつ廃止。
+GameplayLoader は分岐点のメタデータ (at_kyoku/shanten/at_turn) と最終
+報酬計算にのみ使う (drca_collect_branchpoints.py と同じ用途限定)。
 
 新規 Rust 表面はゼロ。台本再生は純 Python ラッパー engine
 (ScriptedForkEngine) が react_batch を横取りして実現する。
 
 set(a): 全4席とも被測定 checkpoint で続行。
 set(b): 分岐点席のみ被測定 checkpoint、他3席は --reference-checkpoint
-  (drca_probe_design.md §5a-3 では Stage1 step_016000 固定)。
+  (drca_probe_design.md §5a-3 では Stage1 step_016000 固定)。分岐点の
+  物理席は必ず split の challenger 席 (one_vs_three.rs 固定写像) でなければ
+  ならない -- 起動時に全分岐点を assert する (差し戻し要件2)。
 
 各ロールアウトは実際には4スプリット (a/b/c/d) 全てが同時に再生されるが
-(OneVsThree の固定 API 制約)、分岐点席と一致するスプリットのみを使う。
+(OneVsThree の固定 API 制約)、分岐点の game_key と一致するスプリットのみを使う。
 
-決定論性の壊れ (r2) は「台本再生中に問い合わせが来た (obs, mask) が
-残っているどの席の次の台本項目とも一致しない」場合に即座に loud FAIL する
-(--inject-fault-for-test でこの経路自体を実演できる)。
+決定論性の壊れ (r2) は「台本再生中に問い合わせが来た (obs, mask) の digest
+が記録列の次に消費すべき項目の digest と一致しない」場合に即座に loud FAIL
+する (--inject-fault-for-test でこの経路自体を実演できる)。
 """
 
 from __future__ import annotations
@@ -46,11 +60,15 @@ from drca_common import (  # noqa: E402
     call_possible_aka_held,
     compute_kyoku_rewards,
     legal_call_action_ids,
+    load_script_sidecar,
     make_arena,
     mask_obs_digest,
+    parse_game_key,
     reconstruct_all_seats,
 )
 from config import config  # noqa: E402
+
+SPLITS = ['a', 'b', 'c', 'd']
 
 
 def setup_logging():
@@ -69,16 +87,20 @@ class ForkState:
     any of the 4 physical seats of the *target* game_key are resolved
     against one shared script, regardless of which of the two Rust-level
     agent objects (challenger / champion) happens to be asked.
+
+    The script is a single FIFO queue of (digest, action) recorded live
+    during collection (drca_collect_branchpoints.py's
+    RecordingPassthroughEngine) -- not a per-seat reconstruction. Physical
+    seat identity plays no role in matching; only queue order + digest
+    equality does, since that queue *is* the literal sequence of queries
+    that occurred for this game_key during collection.
     """
 
-    def __init__(self, *, target_game_key, seat_queues, target_seat, target_local_index,
-                 arm, inject_fault=False):
+    def __init__(self, *, target_game_key, script_queue, branch_index, arm, inject_fault=False):
         self.target_game_key = target_game_key
-        # seat -> list[(mask: np.ndarray[bool], obs: np.ndarray, action: int)]
-        self.seat_queues = seat_queues
-        self.consumed = {seat: 0 for seat in seat_queues}
-        self.target_seat = target_seat
-        self.target_local_index = target_local_index
+        self.script_queue = script_queue  # list[(digest: str, action: int)]
+        self.branch_index = branch_index
+        self.consumed = 0
         self.arm = arm
         self.crossed_branch = False
         self.branch_served = False
@@ -89,54 +111,47 @@ class ForkState:
         self.branch_forced_action = None
         self.branch_call_options = None
 
-    def resolve_seat(self, mask: np.ndarray, obs: np.ndarray):
-        """Find the (unique) seat whose next un-consumed scripted item
-        exactly matches (mask, obs). Loud FAIL (no silent fallback) on
-        zero or multiple matches -- this is the seed-determinism /
-        prefix-replay-integrity guard (drca_probe_design.md §2, r2).
+    def next_action_for(self, digest: str):
+        """Consume the next scripted entry for the target game_key's queue.
+
+        Returns the recorded action, or None if this decision *is* the
+        flagged branch point (caller computes the forced/live branch
+        action). Raises loudly (no silent fallback) if `digest` doesn't
+        match the expected head-of-queue digest -- the r2
+        seed-determinism / prefix-replay-integrity guard.
         """
-        matches = []
-        for seat, queue in self.seat_queues.items():
-            idx = self.consumed[seat]
-            if idx >= len(queue):
-                continue
-            exp_mask, exp_obs, _exp_action = queue[idx]
-            if np.array_equal(mask, exp_mask) and np.array_equal(obs, exp_obs):
-                matches.append(seat)
-        if len(matches) != 1:
+        idx = self.consumed
+        if idx >= len(self.script_queue):
             raise RuntimeError(
                 f'DRCA replay divergence in game_key={self.target_game_key}: '
-                f'query matched {len(matches)} candidate seat(s) '
-                f'(expected exactly 1) at consumed={self.consumed} -- '
-                'this means the replayed wall/action prefix no longer '
-                'matches the recorded log (seed-determinism assert failed)'
+                f'script queue exhausted (len={len(self.script_queue)}) before '
+                'branch point was reached -- prefix determinism broken'
             )
-        return matches[0]
-
-    def next_scripted_action(self, seat: int) -> int:
-        idx = self.consumed[seat]
-        queue = self.seat_queues[seat]
-        _mask, _obs, action = queue[idx]
-        self.consumed[seat] = idx + 1
-        is_branch = (
-            not self.branch_served
-            and seat == self.target_seat
-            and idx == self.target_local_index
-        )
+        exp_digest, exp_action = self.script_queue[idx]
+        if digest != exp_digest:
+            raise RuntimeError(
+                f'DRCA replay divergence in game_key={self.target_game_key}: '
+                f'query digest {digest} != expected {exp_digest} at '
+                f'queue index={idx} -- this means the replayed wall/action '
+                'prefix no longer matches the recorded script (seed-determinism '
+                'assert failed)'
+            )
+        self.consumed = idx + 1
+        is_branch = not self.branch_served and idx == self.branch_index
         if is_branch:
             self.branch_served = True
             self.crossed_branch = True
-            return None  # caller must compute the forced/live branch action
+            return None
         if self.inject_fault and not self._fault_injected:
             self._fault_injected = True
-            faulted = 0 if action != 0 else 1
+            faulted = 0 if exp_action != 0 else 1
             logging.getLogger('drca_probe').warning(
-                'FAULT INJECTED (--inject-fault-for-test): seat=%d idx=%d '
-                'recorded_action=%d -> returning %d instead', seat, idx, action, faulted,
+                'FAULT INJECTED (--inject-fault-for-test): idx=%d recorded_action=%d '
+                '-> returning %d instead', idx, exp_action, faulted,
             )
             return faulted
         self.n_scripted_served += 1
-        return action
+        return exp_action
 
 
 class ScriptedForkEngine:
@@ -217,8 +232,8 @@ class ScriptedForkEngine:
             if game_key != self.fork_state.target_game_key or self.fork_state.crossed_branch:
                 live_idx.append(i)
                 continue
-            seat = self.fork_state.resolve_seat(masks_np[i], obs_np[i])
-            action = self.fork_state.next_scripted_action(seat)
+            digest = mask_obs_digest(obs_np[i], masks_np[i])
+            action = self.fork_state.next_action_for(digest)
             if action is None:
                 # this is the flagged branch decision itself
                 action = self._sample_branch_action(obs_np[i], masks_np[i])
@@ -248,69 +263,50 @@ class ScriptedForkEngine:
         return actions, q_values, [m.tolist() for m in masks_np], is_greedy
 
 
-def build_seat_queues(seats, up_to_seat, up_to_local_index):
-    """Per-seat (mask, obs, action) queues for the WHOLE reconstructed
-    game. Truncation beyond the branch point isn't necessary for
-    correctness (ForkState stops consuming scripted items for *any* seat
-    the instant the branch decision has been served, regardless of how
-    much each seat's queue still has left -- see ForkState.crossed_branch),
-    but we still pass the full per-seat lists through unchanged.
-    """
-    return {
-        seat: list(zip(sg.masks, sg.obs, sg.actions))
-        for seat, sg in seats.items()
-    }
-
-
-def run_one_rollout(branch, arm, probed_ckpt, reference_ckpt, mode, device, tmp_root, *,
+def run_one_rollout(branch, arm, chal_engine, champ_engine, device, tmp_root, *,
                      inject_fault=False, log=None):
-    seats = reconstruct_all_seats(branch['game_log_path'], branch['version'])
+    """chal_engine / champ_engine are pre-built (main() constructs them once
+    and reuses them across all rollouts, differential-fix item 3 -- only the
+    ForkState/wrapper objects below are created fresh per rollout, since
+    those carry per-rollout mutable replay-consumption state).
+    """
+    script_queue = load_script_sidecar(branch['script_path'])
+    branch_index = branch['script_index']
+    if branch_index >= len(script_queue):
+        raise RuntimeError(
+            f'branch_index={branch_index} beyond script sidecar length '
+            f'{len(script_queue)} for game_key={branch["game_key"]} '
+            f'(script_path={branch["script_path"]})'
+        )
+    sidecar_digest, _sidecar_action = script_queue[branch_index]
+    if sidecar_digest != branch['mask_obs_digest']:
+        raise RuntimeError(
+            f'branch point script sidecar mismatch for game_key={branch["game_key"]} '
+            f'script_index={branch_index}: sidecar digest {sidecar_digest} != '
+            f'recorded {branch["mask_obs_digest"]} (sidecar corrupted or index drift)'
+        )
+
+    # GameplayLoader used only for metadata / sel-definition-drift check
+    # (drca_probe_design.md differential fix item 1) -- NOT as the replay
+    # script source (that's script_queue above, recorded live at collection).
     target_seat = branch['seat']
     target_local_index = branch['seat_local_index']
-
+    seats = reconstruct_all_seats(branch['game_log_path'], branch['version'])
     sg = seats[target_seat]
     obs0, mask0 = sg.obs[target_local_index], sg.masks[target_local_index]
-    digest = mask_obs_digest(obs0, mask0)
-    if digest != branch['mask_obs_digest']:
-        raise RuntimeError(
-            f'branch point re-derivation mismatch for game_key={branch["game_key"]} '
-            f'seat={target_seat} idx={target_local_index}: '
-            f'digest {digest} != recorded {branch["mask_obs_digest"]} '
-            '(log file changed since collection, or non-determinism)'
-        )
     if not call_possible_aka_held(obs0, mask0):
         raise RuntimeError(
             f'branch point re-derivation for {branch["game_key"]} no longer satisfies '
             'call_possible & aka_held -- sel-definition drift or corrupted branch point'
         )
 
-    # NOTE: no assertion that split == split_letter_for_seat(target_seat)
-    # here. That mapping only fixes which physical seat is *challenger*
-    # for a given split; during collection (self-play, both roles carry
-    # identical weights) a branch point can legitimately come from any of
-    # the 4 seats regardless of which one happened to be "challenger" that
-    # split. During replay we don't need target_seat to be the challenger
-    # role either -- ForkState resolves seats by (mask, obs) content, not
-    # by role, so it's correct regardless of which of the two Rust-level
-    # agent objects ends up driving that seat this time.
-    seat_queues = build_seat_queues(seats, target_seat, target_local_index)
     fork_state = ForkState(
         target_game_key=branch['game_key'],
-        seat_queues=seat_queues,
-        target_seat=target_seat,
-        target_local_index=target_local_index,
+        script_queue=script_queue,
+        branch_index=branch_index,
         arm=arm,
         inject_fault=inject_fault,
     )
-
-    # `別インスタンス必須` (player.py convention): challenger and champion
-    # must be distinct PyObjects even when they share weights (set a).
-    chal_ckpt = probed_ckpt
-    champ_ckpt = probed_ckpt if mode == 'a' else reference_ckpt
-    chal_engine, _s1, dump_chal = build_policy_engine(chal_ckpt, device, name='drca_probe_chal')
-    champ_engine, _s2, dump_champ = build_policy_engine(champ_ckpt, device, name='drca_probe_champ')
-    if mode == 'a':
-        assert_construction_diff_empty(dump_chal, dump_champ)
 
     chal_wrapper = ScriptedForkEngine(
         role='challenger', fork_state=fork_state, live_engine=chal_engine,
@@ -406,15 +402,6 @@ def main():
     tmp_root = Path(args.tmp_root) if args.tmp_root else out_path.parent / f'{out_path.stem}.tmp'
     tmp_root.mkdir(parents=True, exist_ok=True)
 
-    # Construction-discipline assert, once up front (also re-checked per
-    # rollout inside run_one_rollout): the exact production-trainee builder
-    # is used everywhere, p_enrich/call_bonus_b are always 0.
-    probe_engine, _s, probe_dump = build_policy_engine(args.checkpoint, device, name='drca_probe_assert')
-    log.info('probed checkpoint engine config dump: %s', probe_dump)
-    assert probe_dump['p_enrich'] == 0.0
-    assert probe_dump['call_bonus_b'] == 0.0
-    del probe_engine
-
     branches = []
     with open(args.branchpoints, encoding='utf-8') as f:
         for line in f:
@@ -426,6 +413,38 @@ def main():
     log.info('loaded %d branch points from %s (processing %d)',
               sum(1 for _ in open(args.branchpoints, encoding='utf-8')), args.branchpoints, len(branches))
 
+    if args.mode == 'b':
+        # set(b): branch point's physical seat must be the fixed challenger
+        # seat for its split (one_vs_three.rs), since only that seat gets
+        # replaced by the probed checkpoint -- differential-fix item 2.
+        for branch in branches:
+            _seed, _key, split = parse_game_key(branch['game_key'])
+            expected_seat = SPLITS.index(split)
+            if branch['seat'] != expected_seat:
+                raise RuntimeError(
+                    f'mode=b requires branch point seat to be the challenger seat '
+                    f'for its split: game_key={branch["game_key"]} split={split} '
+                    f'expected_seat={expected_seat} got seat={branch["seat"]} '
+                    '(use --challenger-seat-only at collection time for set(b))'
+                )
+        log.info('mode=b challenger-seat assert passed for all %d branch points', len(branches))
+
+    # Engine construction, once up front (differential-fix item 3 -- reused
+    # across all rollouts below; only ForkState/wrapper objects are built
+    # per rollout, since those carry per-rollout mutable replay state).
+    # `別インスタンス必須` (player.py convention): challenger and champion
+    # must be distinct PyObjects even when they share weights (set a).
+    chal_ckpt = args.checkpoint
+    champ_ckpt = args.checkpoint if args.mode == 'a' else args.reference_checkpoint
+    chal_engine, _s1, dump_chal = build_policy_engine(chal_ckpt, device, name='drca_probe_chal')
+    champ_engine, _s2, dump_champ = build_policy_engine(champ_ckpt, device, name='drca_probe_champ')
+    if args.mode == 'a':
+        assert_construction_diff_empty(dump_chal, dump_champ)
+    log.info('probed checkpoint chal engine config dump: %s', dump_chal)
+    log.info('probed checkpoint champ engine config dump: %s', dump_champ)
+    assert dump_chal['p_enrich'] == 0.0 and dump_chal['call_bonus_b'] == 0.0
+    assert dump_champ['p_enrich'] == 0.0 and dump_champ['call_bonus_b'] == 0.0
+
     n_out = 0
     with out_path.open('w', encoding='utf-8') as fout:
         for bi, branch in enumerate(branches):
@@ -435,7 +454,7 @@ def main():
                 for k in range(args.k):
                     inject = args.inject_fault_for_test and bi == 0 and arm == 'call' and k == 0
                     result, rewards = run_one_rollout(
-                        branch, arm, args.checkpoint, args.reference_checkpoint, args.mode,
+                        branch, arm, chal_engine, champ_engine,
                         device, tmp_root, inject_fault=inject, log=log,
                     )
                     record = {
@@ -446,6 +465,7 @@ def main():
                         'at_turn': branch['at_turn'],
                         'shanten': branch['shanten'],
                         'call_types_available': branch['call_types_available'],
+                        'score_rank_at_branch': branch.get('score_rank_at_branch'),
                         'rollout_index': k,
                         'mode': args.mode,
                         'probed_checkpoint': args.checkpoint,
