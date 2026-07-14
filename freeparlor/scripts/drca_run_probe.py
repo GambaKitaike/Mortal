@@ -57,6 +57,9 @@ import json
 import logging
 import sys
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -83,6 +86,14 @@ from drca_common import (  # noqa: E402
 from config import config  # noqa: E402
 
 SPLITS = ['a', 'b', 'c', 'd']
+
+
+def branch_identity(branch: dict) -> tuple:
+    return (branch['game_key'], branch['branch_role'], branch['branch_seq'])
+
+
+def branch_identity_from_record(record: dict) -> tuple:
+    return (record['game_key'], record['branch_role'], record['branch_seq'])
 
 
 def setup_logging():
@@ -195,13 +206,15 @@ class ScriptedForkEngine:
 
     engine_type = 'mortal'
 
-    def __init__(self, *, role: str, fork_state: ForkState, live_engine, brain, actor_critic, device):
+    def __init__(self, *, role: str, fork_state: ForkState, live_engine, brain, actor_critic,
+                 device, engine_lock: threading.Lock):
         self.role = role
         self.fork_state = fork_state
         self.live_engine = live_engine
         self.brain = brain
         self.actor_critic = actor_critic
         self.device = device
+        self.engine_lock = engine_lock
         self.name = f'drca_fork_{role}'
         self.is_oracle = live_engine.is_oracle
         self.version = live_engine.version
@@ -212,14 +225,15 @@ class ScriptedForkEngine:
         # other eval/opponent engine in this codebase.
 
     def _forward_logits(self, obs_t: torch.Tensor, mask_t: torch.Tensor) -> torch.Tensor:
-        with torch.inference_mode():
-            match self.version:
-                case 1:
-                    mu, _logsig = self.brain(obs_t, None)
-                    phi = mu
-                case 2 | 3 | 4:
-                    phi = self.brain(obs_t)
-            logits, _values = self.actor_critic(phi, mask_t)
+        with self.engine_lock:
+            with torch.inference_mode():
+                match self.version:
+                    case 1:
+                        mu, _logsig = self.brain(obs_t, None)
+                        phi = mu
+                    case 2 | 3 | 4:
+                        phi = self.brain(obs_t)
+                logits, _values = self.actor_critic(phi, mask_t)
         return logits
 
     def _sample_branch_action(self, obs: np.ndarray, mask: np.ndarray) -> int:
@@ -302,9 +316,10 @@ class ScriptedForkEngine:
             live_step_meta = None
             if step_meta is not None and len(step_meta) == batch_size:
                 live_step_meta = [step_meta[i] for i in live_idx]
-            live_actions, _q, _m, _g = self.live_engine.react_batch(
-                live_obs, live_masks, live_invisible, live_step_meta,
-            )
+            with self.engine_lock:
+                live_actions, _q, _m, _g = self.live_engine.react_batch(
+                    live_obs, live_masks, live_invisible, live_step_meta,
+                )
             for j, i in enumerate(live_idx):
                 actions[i] = live_actions[j]
             self.fork_state.n_live_served += len(live_idx)
@@ -315,7 +330,7 @@ class ScriptedForkEngine:
 
 
 def run_one_rollout(branch, arm, chal_engine, champ_engine, device, tmp_root, *,
-                     inject_fault=False, log=None):
+                     engine_lock, inject_fault=False, log=None):
     """chal_engine / champ_engine are pre-built (main() constructs them once
     and reuses them across all rollouts, differential-fix item 3 -- only the
     ForkState/wrapper objects below are created fresh per rollout, since
@@ -367,10 +382,12 @@ def run_one_rollout(branch, arm, chal_engine, champ_engine, device, tmp_root, *,
     chal_wrapper = ScriptedForkEngine(
         role='challenger', fork_state=fork_state, live_engine=chal_engine,
         brain=chal_engine.brain, actor_critic=chal_engine.actor_critic, device=device,
+        engine_lock=engine_lock,
     )
     champ_wrapper = ScriptedForkEngine(
         role='champion', fork_state=fork_state, live_engine=champ_engine,
         brain=champ_engine.brain, actor_critic=champ_engine.actor_critic, device=device,
+        engine_lock=engine_lock,
     )
 
     with tempfile.TemporaryDirectory(prefix='drca_probe_', dir=str(tmp_root)) as tmp:
@@ -430,6 +447,40 @@ def maybe_full_hanchan_fields(rewards) -> dict:
     }
 
 
+def load_existing_records(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    rows = []
+    with path.open(encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def filter_complete_branch_records(records: list[dict], k: int) -> tuple[list[dict], int, int]:
+    """Keep only branch points with exactly K call + K no_call rollouts."""
+    grouped: dict[tuple, dict[str, list[dict]]] = {}
+    for r in records:
+        key = branch_identity_from_record(r)
+        grouped.setdefault(key, {'call': [], 'no_call': []})[r['arm']].append(r)
+
+    kept = []
+    n_complete = 0
+    n_discarded = 0
+    for _key, arms in grouped.items():
+        n_call = len(arms.get('call', []))
+        n_nocall = len(arms.get('no_call', []))
+        if n_call == k and n_nocall == k:
+            kept.extend(arms['call'])
+            kept.extend(arms['no_call'])
+            n_complete += 1
+        else:
+            n_discarded += 1
+    return kept, n_complete, n_discarded
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--branchpoints', required=True)
@@ -440,6 +491,10 @@ def main():
     ap.add_argument('--k', type=int, default=8, help='腕あたりロールアウト数')
     ap.add_argument('--out', required=True)
     ap.add_argument('--limit', type=int, default=None, help='処理する分岐点数の上限 (smoke test 用)')
+    ap.add_argument('--parallel', type=int, default=1,
+                     help='ロールアウト並列ワーカー数 (default 1 = 直列)')
+    ap.add_argument('--resume', action='store_true',
+                     help='--out が既存なら完走済み分岐点のみ保持し残りを処理')
     ap.add_argument('--full-hanchan', action='store_true')
     ap.add_argument('--inject-fault-for-test', action='store_true',
                      help='デバッグ専用: 台本再生中に1アクションを故意に破損させ、'
@@ -450,6 +505,8 @@ def main():
 
     if args.mode == 'b' and not args.reference_checkpoint:
         ap.error('--mode b requires --reference-checkpoint')
+    if args.parallel < 1:
+        ap.error('--parallel must be >= 1')
 
     log = setup_logging()
     device = torch.device(args.device or config['control']['device'])
@@ -485,6 +542,38 @@ def main():
                 )
         log.info('mode=b challenger-seat assert passed for all %d branch points', len(branches))
 
+    kept_records: list[dict] = []
+    completed_keys: set[tuple] = set()
+    if args.resume and out_path.is_file():
+        existing = load_existing_records(out_path)
+        kept_records, n_kept_branches, n_discarded_branches = filter_complete_branch_records(
+            existing, args.k,
+        )
+        grouped = {}
+        for r in kept_records:
+            grouped.setdefault(branch_identity_from_record(r), []).append(r)
+        completed_keys = set(grouped.keys())
+        log.info(
+            '--resume: loaded %d existing records from %s; kept %d complete branch points '
+            '(%d records), discarded %d incomplete branch points',
+            len(existing), out_path, len(completed_keys), len(kept_records),
+            n_discarded_branches,
+        )
+        with out_path.open('w', encoding='utf-8') as fout:
+            for record in kept_records:
+                fout.write(json.dumps(record, ensure_ascii=False) + '\n')
+    elif args.resume:
+        log.info('--resume: no existing output at %s, starting fresh', out_path)
+
+    pending_branches = []
+    for bi, branch in enumerate(branches):
+        if branch_identity(branch) not in completed_keys:
+            pending_branches.append((bi, branch))
+    log.info(
+        'branch points to process: %d pending / %d total (%d already complete)',
+        len(pending_branches), len(branches), len(completed_keys),
+    )
+
     # Engine construction, once up front (differential-fix item 3 -- reused
     # across all rollouts below; only ForkState/wrapper objects are built
     # per rollout, since those carry per-rollout mutable replay state).
@@ -494,53 +583,120 @@ def main():
     champ_ckpt = args.checkpoint if args.mode == 'a' else args.reference_checkpoint
     chal_engine, _s1, dump_chal = build_policy_engine(chal_ckpt, device, name='drca_probe_chal')
     champ_engine, _s2, dump_champ = build_policy_engine(champ_ckpt, device, name='drca_probe_champ')
+    chal_engine.record_trajectory = False
+    champ_engine.record_trajectory = False
     if args.mode == 'a':
         assert_construction_diff_empty(dump_chal, dump_champ)
     log.info('probed checkpoint chal engine config dump: %s', dump_chal)
     log.info('probed checkpoint champ engine config dump: %s', dump_champ)
+    log.info(
+        'record_trajectory=False set on both live engines '
+        '(probe never drains pending_by_game; avoids unbounded RAM at measurement scale)'
+    )
     assert dump_chal['p_enrich'] == 0.0 and dump_chal['call_bonus_b'] == 0.0
     assert dump_champ['p_enrich'] == 0.0 and dump_champ['call_bonus_b'] == 0.0
 
-    n_out = 0
-    with out_path.open('w', encoding='utf-8') as fout:
-        for bi, branch in enumerate(branches):
-            log.info('branch %d/%d: game_key=%s seat=%d at_kyoku=%d',
-                      bi + 1, len(branches), branch['game_key'], branch['seat'], branch['at_kyoku'])
-            for arm in ('call', 'no_call'):
-                for k in range(args.k):
-                    inject = args.inject_fault_for_test and bi == 0 and arm == 'call' and k == 0
-                    result, rewards = run_one_rollout(
-                        branch, arm, chal_engine, champ_engine,
-                        device, tmp_root, inject_fault=inject, log=log,
-                    )
-                    record = {
-                        'branch_index': bi,
-                        'game_key': branch['game_key'],
-                        'seat': branch['seat'],
-                        'at_kyoku': branch['at_kyoku'],
-                        'at_turn': branch['at_turn'],
-                        'shanten': branch['shanten'],
-                        'call_types_available': branch['call_types_available'],
-                        'score_rank_at_branch': branch.get('score_rank_at_branch'),
-                        'rollout_index': k,
-                        'mode': args.mode,
-                        'probed_checkpoint': args.checkpoint,
-                        'reference_checkpoint': args.reference_checkpoint,
-                        **result,
-                    }
-                    if args.full_hanchan:
-                        record.update(maybe_full_hanchan_fields(rewards))
+    engine_lock = threading.Lock()
+    write_lock = threading.Lock()
+
+    tasks = []
+    for bi, branch in pending_branches:
+        for arm in ('call', 'no_call'):
+            for k in range(args.k):
+                inject = args.inject_fault_for_test and bi == 0 and arm == 'call' and k == 0
+                tasks.append((bi, branch, arm, k, inject))
+
+    log.info(
+        'scheduling %d rollouts (%d branch points × 2 arms × K=%d) with --parallel=%d',
+        len(tasks), len(pending_branches), args.k, args.parallel,
+    )
+
+    def run_task(task):
+        bi, branch, arm, k, inject = task
+        result, rewards = run_one_rollout(
+            branch, arm, chal_engine, champ_engine,
+            device, tmp_root, engine_lock=engine_lock, inject_fault=inject, log=log,
+        )
+        record = {
+            'branch_index': bi,
+            'game_key': branch['game_key'],
+            'branch_role': branch['branch_role'],
+            'branch_seq': branch['branch_seq'],
+            'seat': branch['seat'],
+            'at_kyoku': branch['at_kyoku'],
+            'at_turn': branch['at_turn'],
+            'shanten': branch['shanten'],
+            'call_types_available': branch['call_types_available'],
+            'score_rank_at_branch': branch.get('score_rank_at_branch'),
+            'rollout_index': k,
+            'mode': args.mode,
+            'probed_checkpoint': args.checkpoint,
+            'reference_checkpoint': args.reference_checkpoint,
+            **result,
+        }
+        if args.full_hanchan:
+            record.update(maybe_full_hanchan_fields(rewards))
+        return bi, branch, arm, k, result, record
+
+    n_out = len(kept_records)
+    t0 = time.perf_counter()
+    n_done = 0
+
+    open_mode = 'a' if args.resume and kept_records else 'w'
+    with out_path.open(open_mode, encoding='utf-8') as fout:
+        if args.parallel == 1:
+            for task in tasks:
+                bi, branch, arm, k, result, record = run_task(task)
+                with write_lock:
                     fout.write(json.dumps(record, ensure_ascii=False) + '\n')
                     fout.flush()
+                n_out += 1
+                n_done += 1
+                log.info(
+                    '  branch %d/%d arm=%s k=%d forced_action=%s reward_primary=%.4f '
+                    'n_scripted=%d n_live=%d (%d/%d rollouts)',
+                    bi + 1, len(branches), arm, k, result['forced_action'],
+                    result['reward_primary'], result['n_scripted_served'],
+                    result['n_live_served'], n_done, len(tasks),
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=args.parallel) as pool:
+                futures = {pool.submit(run_task, task): task for task in tasks}
+                for fut in as_completed(futures):
+                    bi, branch, arm, k, result, record = fut.result()
+                    with write_lock:
+                        fout.write(json.dumps(record, ensure_ascii=False) + '\n')
+                        fout.flush()
                     n_out += 1
+                    n_done += 1
                     log.info(
-                        '  arm=%s k=%d forced_action=%s reward_primary=%.4f '
-                        'n_scripted=%d n_live=%d',
-                        arm, k, result['forced_action'], result['reward_primary'],
-                        result['n_scripted_served'], result['n_live_served'],
+                        '  branch %d/%d arm=%s k=%d forced_action=%s reward_primary=%.4f '
+                        'n_scripted=%d n_live=%d (%d/%d rollouts)',
+                        bi + 1, len(branches), arm, k, result['forced_action'],
+                        result['reward_primary'], result['n_scripted_served'],
+                        result['n_live_served'], n_done, len(tasks),
                     )
 
-    log.info('DONE: wrote %d rollout records to %s', n_out, out_path)
+    elapsed = time.perf_counter() - t0
+    new_rollouts = len(tasks)
+    if new_rollouts > 0:
+        rollouts_per_h = new_rollouts / elapsed * 3600.0
+        log.info(
+            'timing: %d new rollouts in %.1fs (%.2f rollouts/h)',
+            new_rollouts, elapsed, rollouts_per_h,
+        )
+
+    assert chal_engine.illegal_action_fallback_count == 0, (
+        f'chal_engine illegal_action_fallback_count={chal_engine.illegal_action_fallback_count}'
+    )
+    assert champ_engine.illegal_action_fallback_count == 0, (
+        f'champ_engine illegal_action_fallback_count={champ_engine.illegal_action_fallback_count}'
+    )
+    log.info(
+        'illegal_action_fallback_count=0 on both live engines (chal=%d champ=%d)',
+        chal_engine.illegal_action_fallback_count, champ_engine.illegal_action_fallback_count,
+    )
+    log.info('DONE: %d total rollout records in %s', n_out, out_path)
 
 
 if __name__ == '__main__':

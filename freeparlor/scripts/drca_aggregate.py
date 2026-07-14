@@ -32,10 +32,14 @@ def load_rollouts(path: str) -> list[dict]:
     return rows
 
 
-def group_by_branch(rows: list[dict]) -> dict[int, dict[str, list[dict]]]:
-    out: dict[int, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
+def branch_key(record: dict) -> tuple:
+    return (record['game_key'], record['branch_role'], record['branch_seq'])
+
+
+def group_by_branch(rows: list[dict]) -> dict[tuple, dict[str, list[dict]]]:
+    out: dict[tuple, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        out[r['branch_index']][r['arm']].append(r)
+        out[branch_key(r)][r['arm']].append(r)
     return out
 
 
@@ -156,23 +160,34 @@ def main():
     grouped = group_by_branch(rows)
     branch_meta = {}
     for r in rows:
-        branch_meta.setdefault(r['branch_index'], {
+        key = branch_key(r)
+        branch_meta.setdefault(key, {
+            'branch_index': r.get('branch_index'),
             'shanten': r.get('shanten'),
             'at_turn': r.get('at_turn'),
             'at_kyoku': r.get('at_kyoku'),
             'call_types_available': r.get('call_types_available'),
             'game_key': r.get('game_key'),
+            'branch_role': r.get('branch_role'),
+            'branch_seq': r.get('branch_seq'),
             'score_rank_at_branch': r.get('score_rank_at_branch'),
         })
 
     deltas = []
-    for bi, arms in sorted(grouped.items()):
+    for key, arms in sorted(grouped.items()):
         d = branch_delta(arms.get('call', []), arms.get('no_call', []))
         if d is None:
-            print(f'WARNING: branch_index={bi} missing call or no_call rollouts, skipped', file=sys.stderr)
+            game_key, branch_role, branch_seq = key
+            print(
+                f'WARNING: branch ({game_key}, {branch_role}, {branch_seq}) missing call or '
+                'no_call rollouts, skipped',
+                file=sys.stderr,
+            )
             continue
-        d['branch_index'] = bi
-        d.update(branch_meta[bi])
+        d['game_key'] = key[0]
+        d['branch_role'] = key[1]
+        d['branch_seq'] = key[2]
+        d.update(branch_meta[key])
         deltas.append(d)
 
     print(f'branch points with both arms present: {len(deltas)} / {len(grouped)}')
