@@ -135,6 +135,9 @@ def load_template() -> str:
     return TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
+SPLIT_NEWLINE_MARKER = ".split('\\n')"
+
+
 def render_html(template: str, lines: list[str], title: str) -> str:
     body = "\n".join(lines)
     match = ALLACTIONS_RE.search(template)
@@ -143,8 +146,13 @@ def render_html(template: str, lines: list[str], title: str) -> str:
             f"template marker not found in {TEMPLATE_PATH} "
             "(expected allActions backtick block)"
         )
-    replacement = f"{match.group(1)}{body}{match.group(2)}"
-    html = ALLACTIONS_RE.sub(replacement, template, count=1)
+    html = (
+        template[: match.start()]
+        + match.group(1)
+        + body
+        + match.group(2)
+        + template[match.end() :]
+    )
     return html.replace("<title>Mahjong Archive Player</title>", f"<title>{title}</title>")
 
 
@@ -228,11 +236,19 @@ def main() -> int:
     reserved_names: set[str] = set()
     for path in log_paths:
         entry = convert_log(path, template, out_dir, reserved_names)
+        html_path = out_dir / entry.html_name
+        html_text = html_path.read_text(encoding="utf-8")
+        if SPLIT_NEWLINE_MARKER not in html_text:
+            raise AssertionError(
+                f"{html_path}: generated HTML missing literal {SPLIT_NEWLINE_MARKER!r} "
+                "(re.sub escape regression: .split backslash-n was converted to real newline)"
+            )
         entries.append(entry)
         print(
-            f"WROTE {out_dir / entry.html_name} "
+            f"WROTE {html_path} "
             f"(source={path}, events={entry.n_lines}, players={entry.player_names})"
         )
+        print(f"CHECK {html_path.name}: split-newline marker present")
 
     write_index_html(out_dir, entries)
     print(f"WROTE {out_dir / 'index.html'} ({len(entries)} logs)")
