@@ -8,73 +8,88 @@
 > 最終目標は商用フリー雀荘特化麻雀AIだが、それは本リポジトリの延長では作らない。
 > 本プロジェクトの目的は「**どんな報酬設計が、チップあり麻雀でどんな打牌効果を生むか**」を、
 > 実績ある既存アーキテクチャ（Mortal）の上で**安く・速く調査する**こと。
-> ここで得た**知見**（報酬設計・学習の限界・online TDの挙動）を持って、商用版は
-> 別途ゼロから実装する想定（後述のライセンス事情・データ事情による）。
+> ここで得た**知見**を持って、商用版は別途ゼロから実装する想定
+> （ライセンス事情・データ事情による。詳細は末尾）。
 
 ---
 
-## 何を調べているか
+## 現在のアプローチ: 教師データ非依存・自己対戦 PPO
 
-天鳳ルール（着順がすべて・チップ無し）に最適化された Mortal は、フリー雀荘で
-価値を持つ**赤ドラ・一発・裏・役満（＝チップ）を取りに行く打牌**を学ばない。
-特に「赤を持ったら鳴いてでも和了る」という、チップルールでの基本戦術が出ない。
+初期フェーズ（offline CQL + online per-move TD、`MORTAL_UPSTREAM_README.md` 以前の
+旧構成）は、天鳳2009棋譜を教師とした CQL が「赤を持ったら鳴く」を分布外行動として
+抑制してしまう天井に突き当たり、online の per-move TD（Q_chip 分離）でも安定した
+解決に至らなかった。診断の結果、経済報酬の設計自体は誤りではなく、DQN の学習不安定は
+MSE 損失がチップ由来の外れ値に支配される最適化アーチファクトであり、Huber損失
+（δ=15）で解消することを確認。これを受け、**教師データ（CQL）を完全放棄し、
+on-policy PPO 自己対戦に全面移行**した（`freeparlor/docs/design/ppo_migration_design.md`）。
 
-報酬式を以下のように拡張し、各項が打牌をどう変えるかを段階的に検証する：
-
-```
-reward = α·(素点/1000) + β·(チップ枚数 × 5.0) + γ·順位点(ウマオカ)
-       + opp(赤取りこぼし罰)  + [online] β_sel · Q_chip(per-move TD価値)
-```
-
-対象ルール: 4人打ち・喰いタン・赤×3・25000持ち30000返し・ウマ10-20・オカあり。
-
----
-
-## 主要な発見（要約）
-
-| 論点 | 結論 |
-|---|---|
-| 報酬設計で打牌は動くか | **動く**。素点/チップ/順位点の重みで副露率・和了打点が定量的に変化（Phase2-4） |
-| offline で赤の鳴きを学べるか | **学べない（天井あり）**。CQLが「赤で鳴く」を教師データ外として抑制。鳴き和了率が人間8.98%に対しAI3%台で頭打ち（Phase3-4d） |
-| online 自己対戦で天井を超えられるか | **一時的に超える、が安定しない**。per-move TD（Q_chip）で鳴き和了率6.7%・赤選択性+2.9pp（人間並み）を記録するが、継続学習で振動し平均3%台に収束（Phase5） |
-| 安定化のカギ | CQL強度の単一スイープでは解けない。n_step（局末報酬の逆流距離）・自己対戦の非定常性が振動の主因と推定（Phase6で検証予定） |
-
-**現在地**: 「online TDは offline天井に触れられるが、安定保持はまだできていない」。
-失敗ではなく**未到達**——打牌は健全（avg_rank≈2.5、放銃率正常）なまま、目的の
-behaviorが安定しない段階。
+- **報酬**: `reward = α·(素点Δ/1000) + γ·(GRP順位価値Δ) + β·(チップ枚数Δ × 5.0)`、
+  α=γ=β=1（1チップ=5000点の実ルールに一致する真の経済定数）。チップ専用Qヘッドは廃止し、
+  単一QをHuber-robustなMCリターンで学習（`reward_design_teacherfree.md`）。
+  鳴き頻度を強制する明示項は無く、チップ経済 vs 守備・面前の機会費用から**内生的に
+  出現するはず**という設計。
+- **アーキテクチャ**: 共有Brain（ResNetエンコーダ）→ PolicyHead + ValueHead。
+  1局=1エピソード、GAE(γ=1.0, λ=0.95)。PolicyHead は旧 dueling DQN の `a_head` から
+  初期化（Boltzmann方策として厳密に等価、蒸留不要）。GRP（順位価値LSTM）は凍結流用。
+  自己対戦基盤（server / trainer / client×3）は既存を再利用、相手プールは
+  最新checkpoint 50% + 過去K=5チェックポイントから一様50%。
+- **未解決だった論点**: 赤ドラ保持時の鳴き（`freeparlor/docs/design/
+  reward_design_teacherfree.md` 時点で 20 positive / 28,672 局という希少事象）が
+  経済報酬だけで内生的に出現するかどうか。これを検証するため、**探索の希少性への
+  対処を3段階（Stage1〜3）に分けた実験ラダー**を設計・実施した。
 
 ---
 
-## Phase 一覧
+## 探索ラダー: Stage1〜3（全段不成立で閉幕）
 
-| Phase | 内容 | 結論 |
+赤ドラ保持時の鳴きが自然に出現しない問題について、「機会費用（立直の方が本質的に得）」
+仮説と「探索不足・学習の実装的な壁」仮説を切り分けるため、単一変数アブレーションで
+3段階の介入を順に試した。
+
+| Stage | 内容 | 判定 |
 |---|---|---|
-| 0 | 環境構築（WSL2 / RTX5060 / Rust+PyO3） | — |
-| 1 | 素 Mortal 再現（192×40, 天鳳2009） | 打牌が人間水準 |
-| 2 | 素点+ウマオカ報酬 | 副露 −13.4pp、平均打点 +1322 |
-| 3 | α:γ スイープ | **offline天井を発見**（素点重視でも副露増えず） |
-| 4 | チップ β 導入（libriichi改修で祝儀を正確勘定） | 健全域 β≤0.3 |
-| 4c | 赤条件別 人間 vs AI | 人間は赤持ちで副露+2.81pp、AIは逆 |
-| 4d | 赤取りこぼし罰プローブ | offlineの限界を確定（鳴き和了率が天井） |
-| 5 | online自己対戦 + per-move Q_chip TD | 天井に触れるが安定せず（上記） |
-| 6 | （予定）n_step延長・相手プール混合で安定化 | — |
+| **Stage1** | 純粋な自己対戦（介入なし、entropy探索のみ） | **不成立**。方策は「立直マキシマリズム」（π(立直) 0.42→0.92）をチップ戦略として発見し、その副作用として鳴みが沈んだ。純粋な経済報酬+entropy+自己対戦だけでは希少な赤鳴みを自力発見しない（`ppo_p3_stage1_result.md`） |
+| **Stage2** | 配牌 rejection sampling で赤保持局面の遭遇率を訓練時のみ2.6倍に濃縮（eval は常に自然分布） | **不成立**（分岐2: 倍率0.185× < 2.0×閾値、有意な下降トレンド）。遭遇機会を増やしても鳴み判断改善は伸びず、機会費用ギャップはむしろ拡大（5.68→7.81）。濃縮分布で学習した方策を自然分布に配備すると有意な性能損失（**配備税**）が生じることも新たに確認（`ppo_p3_stage2_result.md`） |
+| **Stage3** | 鳴き実行への anneal 付き per-decision ボーナス（b=5.0、step0-4000固定→4000-8000で0へ線形減衰→8000-16000は正典報酬のみの判定窓） | **不成立**（分岐2: 判定窓倍率1.066×だが強い下降トレンド、slope/SE=−21で Stage1 均衡へ収束）。鳴み局の収支は改善（−0.95→−0.33）したが損益分岐に届かず、機会費用ギャップ（~5.5–5.9チップ）が支配項のまま。anneal設計により配備税はゼロ（Stage2の教訓が有効だったことを確認）（`ppo_p3_stage3_result.md`） |
 
-詳細は `freeparlor/docs/` の各 Phase ドキュメント、最新の全体状況は
-`freeparlor/docs/next_steps.md` を参照。
+**結論**: 探索の遭遇率（Stage2）・報酬の学習誘導（Stage3）のいずれの介入でも
+赤鳴みの経済的合理性は覆らず、**「機会費用が本質的に高い」という内在的仮説を支持**して
+探索ラダーは全段不成立のまま閉幕。
 
 ---
 
-## アーキテクチャ
+## 現在進行中: DRCA プローブ（反実仮想アドバンテージの直接測定）
+
+探索ラダー閉幕を受け、診断計測器として **DRCA（duplicate rollout counterfactual
+advantage）プローブ**を設計・実装・実行中（`freeparlor/docs/design/
+drca_probe_design.md`）。訓練への介入ではなく、同一seedの局面を「鳴く」腕と
+「鳴かない」腕にfork-by-replayで分岐させ、Q(s,鳴く)−Q(s,鳴かない) を duplicate
+rollout で直接測定する。目的は、Stage1-3の結果が (i) 内在的機会費用、
+(ii) credit-assignment失敗、(iii) 競技力不足、(iv) 報酬設計そのものの符号ミス
+のどれに起因するかを切り分けること。
+
+2026-07-15時点、パイロット測定（50分岐点）は完了・監督側検証合格。規模確定
+（K=8 / N=485）済みで、本測定第1枠（セット(a) × Stage1-16000 checkpoint）を
+並走中。最新の進捗は `CLAUDE.md`「現在の状態」節を参照。
+
+---
+
+## アーキテクチャ（実装詳細）
 
 - **ゲームエンジン**: libriichi（Rust）。フリー雀荘ルールのため改修
-  （`agari_detail` で赤/裏/一発/役満を公開、arena の hora に `chip_delta` を埋め込み）。
-- **学習**: PyTorch。192×40 ResNet エンコーダ + dueling DQN + GRP（順位予測）。
-- **offline**: 天鳳2009棋譜から CQL（Conservative Q-Learning）。MC ターゲット。
-- **online**: 自己対戦（server / trainer / client×3 の3プロセス）。
-  チップ価値を **Q_chip** として分離し per-move TD で学習
-  （`Q_total = Q_main + β_sel·Q_chip`）。Q_main の既存設計は不変更。
+  （`agari_detail` で赤/裏/一発/役満を公開、チップ計算・配牌 rejection sampling
+  （Stage2）を追加）。
+- **学習**: PyTorch。192×40 ResNetエンコーダ + PolicyHead/ValueHead（PPO）。
+  GAE(γ=1.0, λ=0.95)、PPO clipped surrogate + Huber(δ=15) value loss + entropy bonus。
+- **自己対戦**: server / trainer / client×3 の3プロセス構成（GPU workload は
+  常に1系統、学習とevalの同時実行は禁止）。
 
-online チップTDの実装詳細は `freeparlor/docs/online_r_chip_layer{1,2,3}.md`。
+---
+
+## 対象ルール
+
+4人打ち・喰いタン・赤×3・25000持ち30000返し・ウマ10-20・オカあり、β=1
+（1チップ=5000点）。
 
 ---
 
@@ -82,59 +97,49 @@ online チップTDの実装詳細は `freeparlor/docs/online_r_chip_layer{1,2,3}
 
 ### 環境
 ```bash
-# WSL2 / RTX5060 / CUDA / conda env "mortal"
+# WSL2（distro名 "mahjong"）/ RTX / CUDA / conda env "mortal"
 conda activate mortal
 ```
 
 ### libriichi ビルド（Rust改修後）
+`PYO3_PYTHON` の明示指定・`CARGO_TARGET_DIR` の未設定確認・import スモークが必須。
+手順は `CLAUDE.md`「環境」節を参照（過去のビルド事故を受けて明文化）。
 ```bash
-cargo build -p libriichi --lib --release
-cp target/release/deps/libriichi.so mortal/libriichi.so
+cargo build --release -p libriichi --lib
+cp -f target/release/libriichi.so mortal/libriichi.so
+PYTHONPATH=mortal python -c "from libriichi.stat import Stat"
 ```
 
-### offline 学習
-```bash
-# runs/ の spawn ランチャ経由（WSL2 の CUDA fork 回避のため必須）
-MORTAL_CFG=freeparlor/configs/<config>.toml python runs/run_train.py
-```
-
-### online 学習（3プロセス）
-```bash
-# server / trainer / client×3。起動前に stale プロセス停止と port5000 解放を確認
-MORTAL_CFG=runs/online_main/config.toml python runs/run_server.py
-MORTAL_CFG=runs/online_main/config.toml python runs/run_train.py
-MORTAL_CFG=runs/online_main/config.toml python runs/run_client.py  # ×3
-```
+### PPO 自己対戦学習
+run 発進は `runs/` の spawn ランチャ（`freeparlor/scripts/run_ppo_*.sh`）経由。
+発進前に必ず `freeparlor/scripts/verify_ppo_p1.py` の全検定PASSと disk 空き容量を
+確認する（設計・run規約は `CLAUDE.md` 参照）。
 
 ### 評価
-打牌統計で比較する（自己対戦の avg_rank は常に≈2.5 のため）。
-赤条件別の分析は `freeparlor/scripts/analyze_aka_conditional.py`、
-チップ実現率は `analyze_chip_realize.py`。
+標準argmax eval バッテリー、grp_baseline 1v3対戦、Stage間メタ対決probeの3レンズを
+`freeparlor/scripts/run_eval_battery_*.sh` 等で実行。
 
 ---
 
-## 主要パラメータ（現状）
+## 主要な文書
 
-| パラメータ | 値 | 備考 |
-|---|---|---|
-| α / γ | 1.0 / 1.0 | 素点・順位点の重み |
-| β | ≤0.3 | チップ報酬。1.0で打牌崩壊 |
-| lambda_opp | 0.3 | 赤取りこぼし罰（offline健全域） |
-| enable_cql_online | true | falseだと無差別鳴きが暴走 |
-| min_q_weight | 未確定 | 0.3が最良だが不安定。安定解は探索中 |
-| chip_n_step | 3 | 延長検討中（振動の主因候補） |
-| chip_target_tau | 0.005 | Q_chip target の Polyak |
-| chip_weight | 1.0 | chip_loss の損失重み |
-| beta_sel_max | 0.3 | warmup 2000 / ramp 2000 step |
+- `freeparlor/docs/design/ppo_migration_design.md` — PPO移行の設計正典
+- `freeparlor/docs/design/reward_design_teacherfree.md` — 報酬設計の確定事項
+- `freeparlor/docs/design/stage2_design.md` / `stage3_design.md` — 各Stageの設計・
+  事前登録済み判定条件
+- `freeparlor/docs/reports/ppo_p3_stage1_result.md` / `_stage2_result.md` /
+  `_stage3_result.md` — 各Stageの判定結果
+- `freeparlor/docs/design/drca_probe_design.md` — 現行DRCAプローブの設計・解釈条件
+- `CLAUDE.md` — プロジェクト全体史・現在の状態・作業規律（最も詳細で最新）
 
 ---
 
-## 今後（ロードマップ）
+## 今後
 
 ### 本リポジトリ内（調査の継続）
-- **短期**: n_step延長・相手プール混合で online の振動を抑え、選択的な赤鳴みを
-  安定保持できるか検証（Phase6）。
-- 評価軸を打牌統計から**チップ込み収支**（期待チップを含む和了点）へ移行。
+- DRCA プローブ本測定 → 判定（進行中）
+- 探索ラダー閉幕後の方針設計（立直マキシマリズムの商用採否、経済定数変更、
+  敵対的搾取者訓練の要否など）
 
 ### 商用版（別実装・本リポジトリの外）
 商用フリー雀荘AIは、本リポジトリの延長ではなく**ゼロから実装する**予定。理由は2つ：
@@ -145,7 +150,7 @@ MORTAL_CFG=runs/online_main/config.toml python runs/run_client.py  # ×3
    コードを継承せず知見だけを用いて独立実装する。
 2. **データ事情**: チップありルールの牌譜データは事実上存在しない（天鳳2009は
    チップ無し）。よって商用版は既存棋譜の模倣ではなく、**純粋な強化学習
-   （自己対戦中心）**になる見込み。本プロジェクトの online TD・報酬設計の知見が、
+   （自己対戦中心）**になる見込み。本プロジェクトの報酬設計・探索介入の知見が、
    その設計の出発点になる。
 
 ---
