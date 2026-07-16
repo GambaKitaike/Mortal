@@ -80,7 +80,7 @@ DRCA の凍結済み解釈条件（`drca_probe_design.md` §5a）を変更する
 | 議題 | 不足材料 | 状態 |
 |---|---|---|
 | 1 商用採否 | 「商品性」の要件定義（フリー雀荘 AI に何を求めるか — 強さ/人間らしさ/鳴き頻度の見た目） | **未着手 — Gamba ヒアリング要** |
-| 1 商用採否 | Stage3-16000 の定性レビュー（Stage1 版 `qualitative_expert_review_20260715.md` の対） | 2026-07-16 着手（別 commit） |
+| 1 商用採否 | Stage3-16000 の定性レビュー（Stage1 版 `qualitative_expert_review_20260715.md` の対） | **初回1半荘分 記録済み**（2026-07-16、`qualitative_expert_review_stage3_20260716.md` — 「鳴きの入口は増えたが鳴き後が未熟」「カン判断異常」「降り崩壊」） |
 | 2 経済定数 | 変更候補軸の列挙とコスト見積り（16k run 1本 ≈ 2日 + drain ~370GB。1 branch = 1 variable で軸ごとに直列） | 本書 §2 で粗出しのみ |
 | 3 搾取者訓練 | 目的の分離（頑健性検査 vs メタ探索）と訓練系の粗設計 | 未着手 |
 | 4 Stage2b | 解凍プロトコル案（濃縮育ち checkpoint の自然分布 fine-tune） | 未着手 |
