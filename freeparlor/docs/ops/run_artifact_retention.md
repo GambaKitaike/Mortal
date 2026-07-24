@@ -85,13 +85,16 @@ launcher 側の防御（DISK_MIN_GB preflight）は §3 参照。
 | `runs/ppo/stage3_20260712_033403/drain/` | **368GB** | 判定完了済み（2026-07-13、`ppo_p3_stage3_result.md` §9） | **削除実施済み（2026-07-16）** |
 | `runs/ppo/aborted1_stage3_20260711_141705/drain/` | 31GB | 裁定完了済み（2026-07-11、ゲート v2 amendment の根拠は `logs/ppo_diag.jsonl` で drain 非依存） | **削除実施済み（2026-07-16）** |
 | `runs/ppo/stage1_20260705_014852/drain/` | 13GB | 判定非関与の早期 run（判定根拠 run は `053301`・`020120_resume` のみ） | **削除実施済み（2026-07-16）** |
-| `runs/ppo/stage2_20260709_194510_resume/buffer/` | 36GB | `.traj` ×1660 — 全量 trainer 終了後の残党生産・未消費（2026-07-24 用途確定、上記分類表参照） | **削除可 — 承認待ち** |
-| `runs/ppo/stage1_20260706_020120_resume/buffer/` | 5.3GB | `.traj` ×240 — 同上（未 drain の in-flight データ。判定根拠 = checkpoints/logs/config は buffer 非依存） | **削除可 — 承認待ち** |
-| `runs/ppo/stage3_20260712_033403/buffer/` | 1.4GB | `.traj` ×60 — 同上 | **削除可 — 承認待ち** |
-| `runs/ppo/stage2_20260709_092541/buffer/` | 154MB | `.traj` ×71 — 同上（クラッシュ時の in-flight） | **削除可 — 承認待ち** |
+| `runs/ppo/stage2_20260709_194510_resume/buffer/` | 36GB | `.traj` ×1660 — 全量 trainer 終了後の残党生産・未消費（2026-07-24 用途確定、上記分類表参照） | **削除実施済み（2026-07-25）** |
+| `runs/ppo/stage1_20260706_020120_resume/buffer/` | 5.3GB | `.traj` ×240 — 同上（未 drain の in-flight データ。判定根拠 = checkpoints/logs/config は buffer 非依存） | **削除実施済み（2026-07-25）** |
+| `runs/ppo/stage3_20260712_033403/buffer/` | 1.4GB | `.traj` ×60 — 同上 | **削除実施済み（2026-07-25）** |
+| `runs/ppo/stage2_20260709_092541/buffer/` | 154MB | `.traj` ×71 — 同上（クラッシュ時の in-flight） | **削除実施済み（2026-07-25）** |
 | その他（online_* 系 ~12GB、phase4* ~6GB 等） | ~20GB | DQN 経路の遺産（main ブランチ管轄） | 本書のスコープ外 |
 
-現在の承認待ちは buffer/ 4件で **計 ~43GB** 回収可能（承認後、§2 手順で実施）。
-実施タイミングは任意（削除は GPU 非依存のため DRCA 測定中でも実施可）。
-なお空き 872GB（2026-07-24 時点 871GB）につき緊急性は低い — 次回 preflight
-FATAL 時のイベント駆動清掃に回しても可。
+buffer/ 4件は 2026-07-25 に §2 手順で削除実施済み（Gamba 承認・許可リスト4パスのみ
+明示引数で削除・glob 不使用）。記録: 削除前 du = 36G/5.3G/1.4G/154M、
+`df -h /` 使用 85G/空き 871G → 使用 43G/**空き 914G**（42GB 回収）。削除後に
+4 run すべての `checkpoints/`・`logs/ppo_diag.jsonl`・`config.toml` 実在確認済み。
+進行中の DRCA 第2枠（a_init）は削除前後で 8 プロセス + tmux 稼働継続を確認
+（削除は GPU/プロセス非干渉の I/O のみ）。これで §5 の清掃候補は全件処理済み
+（スコープ外の DQN 遺産 ~20GB を除く）。
