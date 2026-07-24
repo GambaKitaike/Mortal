@@ -60,6 +60,84 @@ def log(msg: str, buf: StringIO):
     buf.write(msg + '\n')
 
 
+def _fmt_mtime(ts: float) -> str:
+    return datetime.fromtimestamp(ts).isoformat(timespec='seconds')
+
+
+def check_libriichi_freshness(
+    so_file: Path | None = None,
+    src_root: Path | None = None,
+    built_so: Path | None = None,
+) -> None:
+    """Preflight gate (NOT one of the numbered checks): abort loudly if the
+    imported libriichi.so is stale relative to the Rust sources or the built
+    artifact. Guards the 2026-07-08 stale-.so build-incident class
+    (CARGO_TARGET_DIR pollution → build target ≠ cp source). Pure filesystem
+    mtime comparison — no self-play, no GPU. Runs before any check so a stale
+    .so aborts before torch/self-play work.
+
+    Two independent staleness signals:
+      (1) any libriichi Rust source newer than the imported .so
+          → edited but not rebuilt+cp'd.
+      (2) target/release/libriichi.so newer than the imported .so
+          → rebuilt but cp step skipped (the exact 2026-07-08 failure).
+    Paths are injectable for unit testing; default to the real tree.
+    """
+    if so_file is None:
+        import libriichi
+        so_file = Path(libriichi.__file__)
+    if src_root is None:
+        src_root = ROOT / 'libriichi'
+    if built_so is None:
+        built_so = ROOT / 'target' / 'release' / 'libriichi.so'
+
+    if not so_file.exists():
+        raise SystemExit(f'FATAL: imported libriichi.so has no on-disk file: {so_file}')
+    so_mtime = so_file.stat().st_mtime
+
+    reasons: list[str] = []
+
+    # (1) newest Rust source under libriichi/src + build.rs + Cargo.toml.
+    candidates = list((src_root / 'src').rglob('*.rs'))
+    candidates += [src_root / 'build.rs', src_root / 'Cargo.toml']
+    newest_src: Path | None = None
+    newest_src_mtime = 0.0
+    for p in candidates:
+        if not p.exists():
+            continue
+        m = p.stat().st_mtime
+        if m > newest_src_mtime:
+            newest_src_mtime, newest_src = m, p
+    if newest_src is not None and newest_src_mtime > so_mtime:
+        reasons.append(
+            f'Rust source newer than imported .so: {newest_src} '
+            f'({_fmt_mtime(newest_src_mtime)} > {_fmt_mtime(so_mtime)}) '
+            f'— edited but not rebuilt+cp\'d'
+        )
+
+    # (2) built artifact newer than imported .so → cp step skipped.
+    if built_so.exists():
+        b = built_so.stat().st_mtime
+        if b > so_mtime:
+            reasons.append(
+                f'{built_so} newer than imported .so '
+                f'({_fmt_mtime(b)} > {_fmt_mtime(so_mtime)}) — cp step skipped'
+            )
+
+    if reasons:
+        detail = '\n'.join(f'  - {r}' for r in reasons)
+        raise SystemExit(
+            f'FATAL: stale libriichi.so ({so_file})\n{detail}\n'
+            f'Rebuild via freeparlor/scripts/preflight_libriichi.sh before verifying '
+            f'(2026-07-08 build-incident guard).'
+        )
+    print(
+        f'libriichi freshness OK: {so_file} (mtime {_fmt_mtime(so_mtime)}) '
+        f'>= newest Rust source'
+        + (f' {newest_src.name} ({_fmt_mtime(newest_src_mtime)})' if newest_src else '')
+    )
+
+
 def _run_self_play_with_retry(make_env, engine, champion, *, log_dir: Path, seed_count: int, seed_bases: list[int]):
     """Run py_vs_py; retry on flaky kan-select RuntimeError from sampled policies."""
     import shutil
@@ -1535,6 +1613,9 @@ def main():
     parser.add_argument('--grp-state', default='/home/gamba/mahjong/runs/grp.pth')
     parser.add_argument('--online-log', default=DEFAULT_ONLINE_LOG)
     args = parser.parse_args()
+
+    # Preflight gate (before torch/self-play): fail fast on a stale .so.
+    check_libriichi_freshness()
 
     state = torch.load(args.checkpoint, weights_only=True, map_location='cpu')
     version = state['config']['control']['version']
