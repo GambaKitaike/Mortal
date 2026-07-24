@@ -28,7 +28,7 @@ launcher 側の防御（DISK_MIN_GB preflight）は §3 参照。
 | `logs/`（`ppo_diag.jsonl` 等）・`tb/`・`config.toml`・`mortal*.pth` | | **恒久保全（削除禁止）** — 判定集計の一次ソース |
 | `test_play/`・`train_play/` | eval 牌譜 json.gz | **恒久保全** — 軽量（~数十MB）かつ定性レビュー資産 |
 | `drain/` | 消費済み生ロールアウト（step 別サブディレクトリ） | **当該 run の判定/裁定が md に commit された後、削除可**（§2 の承認手順必須）。判定前は run の一部として温存 |
-| `buffer/` | `*.traj`（2026-07-16 棚卸しで発見、最大 36GB） | drain と同種の消費済み生データと推定されるが**用途未確認 — 削除前に学習コード側の参照有無を調査**（現時点では保留） |
+| `buffer/` | `*.traj`（client→server 受領ステージング領域） | **用途確定（2026-07-24 調査）**: client が送信した rollout を server が受領・蓄積し、trainer の drain 要求で `drain/` へ move する**前段バッファ**（`server.py` buffer_dir、move は同 118–130 行）。run 終了後の残量 = **未 drain・未消費の in-flight データ**（trainer 終了後の残党 client 生産物。stage2_resume で mtime 実証: trainer 最終 checkpoint 11:31 に対し buffer 最古 11:34–最新 13:50 = 全量が終了後生産）。参照コードは `server.py` のみで、**起動時に rmtree→再作成**するため resume にも不要。→ **drain と同ポリシー（判定/裁定 commit 後、§2 手順で削除可）** |
 | aborted run（`aborted<N>_` prefix） | | 裁定に使った `logs/`・`config`・`checkpoints/` は恒久保全。**`drain/` は裁定 commit 後に削除可** |
 | smoke run | | 対応する検証結果が md に commit された後、run dir ごと削除可 |
 | DRCA 採取物 | `bp*.jsonl`・`*.logs/`・script sidecar・`probe_*.jsonl` | **恒久保全** — 測定の再現根拠かつ軽量（run あたり ~10MB） |
@@ -74,17 +74,24 @@ launcher 側の防御（DISK_MIN_GB preflight）は §3 参照。
   現場保全が悪化する）。インシデント時は最終 checkpoint の健全性確認を最優先
 - watchdog×Cleanup 競合（バックログ4）は別問題（本書のスコープ外）
 
-## 5. 現況スナップショット（2026-07-16 棚卸し）と清掃候補
+## 5. 現況スナップショット（2026-07-16 棚卸し、2026-07-24 更新）と清掃候補
 
-`df`: 495GB 使用 / 462GB 空き（52%）。`runs/ppo` が 460GB。
+初回棚卸し時 `df`: 495GB 使用 / 462GB 空き（52%）。drain 3件は 2026-07-16 に
+§2 手順の初回適用として削除実施済み（Gamba 承認・411GB 回収 → 872GB 空き）。
+2026-07-24 に buffer/ の用途確定（上記分類表）を受け候補4件を追加。
 
 | パス | サイズ | 分類 | 処置 |
 |---|---|---|---|
-| `runs/ppo/stage3_20260712_033403/drain/` | **368GB** | 判定完了済み（2026-07-13、`ppo_p3_stage3_result.md` §9） | **削除可 — 承認待ち** |
-| `runs/ppo/aborted1_stage3_20260711_141705/drain/` | 31GB | 裁定完了済み（2026-07-11、ゲート v2 amendment の根拠は `logs/ppo_diag.jsonl` で drain 非依存） | **削除可 — 承認待ち** |
-| `runs/ppo/stage1_20260705_014852/drain/` | 13GB | 判定非関与の早期 run（判定根拠 run は `053301`・`020120_resume` のみ） | **削除可 — 承認待ち** |
-| `runs/ppo/stage2_20260709_194510_resume/buffer/` | 36GB | `.traj` ×1660、用途未確認 | 調査まで保留 |
+| `runs/ppo/stage3_20260712_033403/drain/` | **368GB** | 判定完了済み（2026-07-13、`ppo_p3_stage3_result.md` §9） | **削除実施済み（2026-07-16）** |
+| `runs/ppo/aborted1_stage3_20260711_141705/drain/` | 31GB | 裁定完了済み（2026-07-11、ゲート v2 amendment の根拠は `logs/ppo_diag.jsonl` で drain 非依存） | **削除実施済み（2026-07-16）** |
+| `runs/ppo/stage1_20260705_014852/drain/` | 13GB | 判定非関与の早期 run（判定根拠 run は `053301`・`020120_resume` のみ） | **削除実施済み（2026-07-16）** |
+| `runs/ppo/stage2_20260709_194510_resume/buffer/` | 36GB | `.traj` ×1660 — 全量 trainer 終了後の残党生産・未消費（2026-07-24 用途確定、上記分類表参照） | **削除可 — 承認待ち** |
+| `runs/ppo/stage1_20260706_020120_resume/buffer/` | 5.3GB | `.traj` ×240 — 同上（未 drain の in-flight データ。判定根拠 = checkpoints/logs/config は buffer 非依存） | **削除可 — 承認待ち** |
+| `runs/ppo/stage3_20260712_033403/buffer/` | 1.4GB | `.traj` ×60 — 同上 | **削除可 — 承認待ち** |
+| `runs/ppo/stage2_20260709_092541/buffer/` | 154MB | `.traj` ×71 — 同上（クラッシュ時の in-flight） | **削除可 — 承認待ち** |
 | その他（online_* 系 ~12GB、phase4* ~6GB 等） | ~20GB | DQN 経路の遺産（main ブランチ管轄） | 本書のスコープ外 |
 
-清掃候補 3 件で **計 ~412GB** 回収可能（承認後）。実施タイミングは任意
-（削除は GPU 非依存のため DRCA 測定中でも実施可）。
+現在の承認待ちは buffer/ 4件で **計 ~43GB** 回収可能（承認後、§2 手順で実施）。
+実施タイミングは任意（削除は GPU 非依存のため DRCA 測定中でも実施可）。
+なお空き 872GB（2026-07-24 時点 871GB）につき緊急性は低い — 次回 preflight
+FATAL 時のイベント駆動清掃に回しても可。
