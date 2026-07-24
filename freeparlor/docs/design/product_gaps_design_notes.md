@@ -190,7 +190,67 @@ DRCA 残枠（a_init 進行中 → a_s3final → a_s3mid → b_s3final）→ DRC
   └─ 裁定に応じて: G2 MVP(CLI) → G1 O1/O2 → G3 E2 + 鳴き祝儀プリセット run
 ```
 
-- G1 O2 と G2 は相互依存（O2 は自前アリーナ牌譜が前提、G2 は O1/O2 が解析出力）。
+- G1 O2 と G2 は相互依存（O2 は自前アリーナ牌譜が前提、G2 は O1/O2 が解析出力)。
   **着手順は G2 → G1**（牌譜がなければ解析対象がない）。
 - G3 は G1/G2 と独立に設計可能だが、run 発進は GPU 1系統規律により DRCA 完走後。
 - 本書の各「推奨」は 0b の入力であって決定ではない。裁定は全て Gamba。
+
+---
+
+## 5. read-only 調査結果（2026-07-24 実施、Gamba 承認済み・コード変更なし）
+
+§4 で挙げた前倒し調査2本の結果。**§2.2 / §3.2 の暫定推奨をここで更新する**
+（本文は原案として残し、本節が優先）。
+
+### 5.1 調査1: G2/H1 — mjai イベントタップの可否
+
+**結論: イベントは既にエージェント境界まで配られており、Python への橋が
+1箇所で捨てているだけ。opt-in の追加的 Rust 小変更1点で実現可能。**
+
+| 事実 | 根拠 |
+|---|---|
+| Board は対局中 `log: Vec<EventExt>` をインクリメンタルに蓄積（json.gz はゲーム終了時に `take_log` でまとめ書き。対局中のファイル tail は不可能） | `libriichi/src/arena/board.rs:82,223` |
+| game loop は**毎 decision で全イベント log** を `BatchAgent::set_scene(index, ctx.log, state, ...)` に渡している | `libriichi/src/arena/game.rs:115-120` |
+| Python bridge（`MortalBatchAgent::set_scene`）は log 引数を `_` で**破棄**し、encode 済み obs のみ Python `react_batch` へ | `libriichi/src/agent/mortal.rs:224-228` |
+| `EventExt`/`Metadata` は `Serialize` 実装済み（JSON 化は自明） | `libriichi/src/mjai/event.rs:132-141` |
+| `enable_quick_eval` は Python engine 属性から getattr で読まれる既存配線。人間席は `False` にすれば打牌1択局面も含め全 decision が Python に届く | `libriichi/src/agent/mortal.rs:68`、`mortal/engine.py:19` |
+
+実現方式: set_scene で log（または前回呼び出し以降の差分イベント）を JSON 化して
+opt-in 属性付き engine にのみ渡す（属性不在＝従来挙動ビット不変、p_enrich の
+getattr 前例と同型）。**H2（mjai プロトコル層の別経路新設）は不要と判断** —
+アリーナ・経済・検定資産をそのまま使える H1 で確定を提案。
+UI 側は受信イベント列から盤面描画 + masks で合法手提示、という素直な構成になる。
+
+### 5.2 調査2: G3/E2 — chip_deltas 呼び出し面
+
+**結論: E2 想定（「成分露出の Rust 変更1回が必要」）より良い。
+祝儀バリアントは Rust 変更ゼロで実装可能（E2' に更新）。**
+
+| 事実 | 根拠 |
+|---|---|
+| `AgariDetail` は `#[pyclass]` で**全フィールド `#[pyo3(get)]` 露出済み**（num_aka/num_ura/ippatsu/yakuman/is_tsumo/point/fu/han） | `libriichi/src/state/agari_detail.rs:3-20` |
+| `PlayerState.agari_detail(is_ron, ura)` が Python から呼べ、`chip_from_log.py` の**フォールバック経路が現に log 再生 → Python 側チップ計算をしている** | `mortal/chip_from_log.py:39-60` |
+| チップ規則の **Python 実装が既に存在**: `preprocess_chips.chip_base` / `hora_chip_deltas`（Rust 側はコメント "Matches preprocess_chips.chip_base" のとおり Python 版の鏡） | `freeparlor/scripts/preprocess_chips.py:24-41` |
+| 訓練のチップストリームは **Python 側で log から解決**される（client.py → `load_kyoku_chip_deltas_from_log`）。チップは対局進行・合法手に非関与の精算専用値 | `mortal/client.py:142-173` |
+| 現行 `chip_delta_at_hora` は log の `meta.chip_delta`（Rust 産・正典規則）を**優先**し、無いときのみ再計算 | `mortal/chip_from_log.py:41-45` |
+
+E2'（更新後の推奨）: 祝儀バリアント = Python 側の `chip_base`/`hora_chip_deltas` を
+経済パラメタ（面前/鳴き条件・係数）で駆動し、**バリアント経済では `meta.chip_delta`
+優先を止めて常に再計算**する（Rust 産 meta は正典規則の値のまま log に残るため、
+読み手がそれを拾うと経済がずれる）。和了者の面前/副露状態は当該局のイベント列から
+Python で導出可能（チー/ポン/大明槓/加槓 = 副露、暗槓は面前維持 — 祝儀ルール上の
+扱い自体がプリセットパラメタ）。
+
+**要監査事項（バリアント branch の検定拡張対象)**: `meta.chip_delta` を直接読む
+消費者の全数列挙（少なくとも `chip_from_log.py` 優先経路・検定(の chip 配置 e2e)・
+eval 集計系。正典経済 branch では現状維持で無害、バリアント branch でのみ
+再計算強制へ切り替え）。
+
+### 5.3 §4 実施順への影響
+
+- G2 MVP の Rust 表面積は「set_scene の opt-in イベント転送」1点に確定
+  （事前見積り「表面積ゼロの見込み」は 1点に修正)。libriichi 改修を伴うため、
+  実装時はビルド手順規律（CLAUDE.md）+ 検定拡張（opt-in 不在時のビット不変性）が必要。
+- G3 は Rust 変更ゼロに確定 → **G3 の実装リスクは G2 より低い**。ただし run 発進
+  （GPU）が律速である事実は不変。
+- いずれも実装承認は 0b 裁定後（本調査は read-only の事前確定のみ）。
