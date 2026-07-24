@@ -40,7 +40,15 @@ cleanup() {
   [[ -n "${TRAINER_WATCHDOG_PID:-}" ]] && kill "$TRAINER_WATCHDOG_PID" 2>/dev/null || true
   for pid in "${CLIENT_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
   [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null || true
+  # SERVER_PID / CLIENT_PIDS point at the `conda run` / watchdog-subshell
+  # wrappers, which do NOT forward SIGTERM to the child python. Reap the real
+  # python processes by pattern too, mirroring the trainer line — otherwise
+  # server/client are orphaned and left alive (2026-07-10: 8h residual leak).
+  # Single-stream rule (one training run at a time) makes broad pattern kill
+  # safe; DRCA uses drca_run_probe.py and is unaffected by these patterns.
   pkill -f "python /home/gamba/mahjong/runs/run_train_ppo.py" 2>/dev/null || true
+  pkill -f "python /home/gamba/mahjong/runs/run_server.py" 2>/dev/null || true
+  pkill -f "python /home/gamba/mahjong/runs/run_client.py" 2>/dev/null || true
   sleep 2
   pkill -f "${CONFIG_TAG}/config.toml" 2>/dev/null || true
 }
@@ -160,6 +168,15 @@ trainer_watchdog() {
     while true; do
       start_trainer
       code=$?
+      # exit 0 = trainer reached max_steps (normal completion). Do NOT restart:
+      # the server is still alive so the old `kill -0 SERVER_PID` gate would
+      # otherwise treat completion as a crash and spawn a benign double-start
+      # (observed in Stage3 run, 2026-07-13).
+      if (( code == 0 )); then
+        echo "$(date -Iseconds) trainer completed normally (exit 0), watchdog stopping (no restart)" \
+          >> "$LOG_DIR/trainer_watchdog.log"
+        break
+      fi
       if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi
       now=$(date +%s)
       if (( now - window_start >= 3600 )); then
@@ -251,6 +268,13 @@ while (( $(date +%s) < DEADLINE )); do
   nan_err=$(grep -ciE 'non-finite|FloatingPointError' "$LOG_DIR/trainer.log" 2>/dev/null | tr -d ' ' || true)
   nan_err=${nan_err:-0}
   if ! kill -0 "$TRAINER_WATCHDOG_PID" 2>/dev/null; then
+    # Watchdog now exits on trainer normal completion (exit 0). If we have
+    # reached max_steps, that is a clean finish, not a crash → break to the
+    # normal shutdown path instead of erroring out with exit 6.
+    if (( steps >= MAX_STEPS )); then
+      echo "trainer watchdog exited after reaching step $steps (normal completion)" | tee -a "$LOG_DIR/monitor.log"
+      break
+    fi
     echo "ERROR: trainer watchdog exited (see $LOG_DIR/trainer_watchdog.log)" | tee -a "$LOG_DIR/monitor.log"
     exit 6
   fi
