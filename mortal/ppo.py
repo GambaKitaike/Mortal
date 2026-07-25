@@ -76,6 +76,15 @@ def compute_gae(
     return advantages, returns
 
 
+def masked_kl_forward(logits: Tensor, ref_logits: Tensor, mask: Tensor) -> Tensor:
+    """Full forward KL on legal actions: E[ sum_a p(a|s) (log p - log p_ref) ]."""
+    probs = masked_softmax(logits, mask)
+    logp = masked_log_softmax(logits, mask)
+    logp_ref = masked_log_softmax(ref_logits, mask)
+    contrib = probs * (logp - logp_ref)
+    return contrib.masked_fill(~mask, 0.0).sum(-1).mean()
+
+
 def ppo_loss(
     logits: Tensor,
     values: Tensor,
@@ -89,6 +98,8 @@ def ppo_loss(
     c_vf: float = 0.5,
     c_ent: float = 0.01,
     huber_delta: float = 15.0,
+    kl_beta: float = 0.0,
+    ref_logits: Tensor | None = None,
 ) -> dict[str, Tensor]:
     """PPO clipped surrogate + Huber value + entropy bonus (no CQL)."""
     adv_norm = normalize_advantages(advantages)
@@ -101,12 +112,17 @@ def ppo_loss(
     value_loss = F.huber_loss(values, returns, delta=huber_delta)
     entropy = policy_entropy(logits, masks).mean()
     total = policy_loss + c_vf * value_loss - c_ent * entropy
-    return {
+    out = {
         'total': total,
         'policy_loss': policy_loss,
         'value_loss': value_loss,
         'entropy': entropy,
     }
+    if kl_beta != 0.0 and ref_logits is not None:
+        kl_ref = masked_kl_forward(logits, ref_logits, masks)
+        out['kl_ref'] = kl_ref
+        out['total'] = total + kl_beta * kl_ref
+    return out
 
 
 def call_bonus_coeff(step: int, b: float, full_until_step: int, zero_at_step: int) -> float:

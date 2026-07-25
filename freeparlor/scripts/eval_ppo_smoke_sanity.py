@@ -89,6 +89,8 @@ def main():
     log.info('eval engine config dump: %s', diag_cfg)
     assert diag_cfg['p_enrich'] == 0.0, 'eval 経路は p_enrich=0 必須'
     assert diag_cfg['call_bonus_b'] == 0.0, 'eval 経路は call_bonus_b=0 必須'
+    assert diag_cfg['anchor_prob'] == 0.0, 'eval 経路は anchor_prob=0 必須'
+    assert diag_cfg['kl_beta'] == 0.0, 'eval 経路は kl_beta=0 必須'
     assert diag_cfg['eval_mode'] is True, 'eval 経路は argmax (eval_mode=True) 必須'
     assert diag_cfg['enable_rule_based_agari_guard'] is True, 'eval 経路は guard ON 必須'
     del _diag_engine

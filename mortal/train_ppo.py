@@ -28,6 +28,7 @@ def train_ppo():
         apply_call_bonus,
         call_bonus_coeff,
         compute_gae,
+        masked_kl_forward,
         masked_softmax,
         normalize_advantages,
         ppo_loss,
@@ -56,6 +57,8 @@ def train_ppo():
     call_bonus_b = ppo_cfg.get('call_bonus_b', 0.0)
     call_bonus_full_until_step = ppo_cfg.get('call_bonus_full_until_step', 0)
     call_bonus_zero_at_step = ppo_cfg.get('call_bonus_zero_at_step', 0)
+    kl_beta = float(ppo_cfg.get('kl_beta', 0.0))
+    kl_ref_checkpoint = ppo_cfg.get('kl_ref_checkpoint') or ''
     diag_log_path = Path(config['control']['state_file']).parent / 'logs' / 'ppo_diag.jsonl'
     diag_log_path.parent.mkdir(parents=True, exist_ok=True)
     trainer_param_version = 0
@@ -97,6 +100,28 @@ def train_ppo():
 
     logging.info(f'PPO mortal params: {parameter_count(mortal):,}')
     logging.info(f'PPO actor_critic params: {parameter_count(actor_critic):,}')
+
+    ref_mortal = None
+    ref_actor_critic = None
+    if kl_beta > 0.0:
+        ref_ckpt = kl_ref_checkpoint or ppo_cfg.get('init_checkpoint') or ''
+        if not ref_ckpt or not os.path.isfile(ref_ckpt):
+            raise ValueError(
+                f'kl_beta={kl_beta} > 0 but kl_ref checkpoint is missing or not a file: {ref_ckpt!r}'
+            )
+        ref_mortal = Brain(version=version, **config['resnet']).to(device)
+        ref_actor_critic = ActorCritic(
+            version=version,
+            tau=ppo_cfg['tau_init'],
+        ).to(device)
+        load_ppo_from_mortal_checkpoint(ref_actor_critic, ref_ckpt, map_location=device)
+        ref_mortal_state = torch.load(ref_ckpt, weights_only=True, map_location=device)['mortal']
+        ref_mortal.load_state_dict(ref_mortal_state)
+        ref_mortal.requires_grad_(False)
+        ref_actor_critic.requires_grad_(False)
+        ref_mortal.eval()
+        ref_actor_critic.eval()
+        logging.info(f'KL anchor ref model loaded from {ref_ckpt} (frozen, kl_beta={kl_beta})')
 
     if device.type == 'cuda':
         logging.info(f'device: {device} ({torch.cuda.get_device_name(device)})')
@@ -345,6 +370,26 @@ def train_ppo():
         with torch.inference_mode():
             phi_all = mortal(obs)
             logits_all, values_all = actor_critic(phi_all, masks)
+            ref_logits_all = None
+            if kl_beta > 0.0 and ref_mortal is not None:
+                n_batch = obs.shape[0]
+                ref_mb = minibatch_size if minibatch_size and minibatch_size < n_batch else n_batch
+                ref_logits_chunks: list[torch.Tensor] = []
+                for ref_start in range(0, n_batch, ref_mb):
+                    ref_sl = slice(ref_start, ref_start + ref_mb)
+                    ref_phi = ref_mortal(obs[ref_sl])
+                    ref_logits_chunk, _ = ref_actor_critic(ref_phi, masks[ref_sl])
+                    ref_logits_chunks.append(ref_logits_chunk)
+                ref_logits_all = torch.cat(ref_logits_chunks, dim=0)
+                kl_ref_mean = float(
+                    masked_kl_forward(logits_all, ref_logits_all, masks).item(),
+                )
+                _append_diag({
+                    'event': 'kl_anchor',
+                    'kl_beta': kl_beta,
+                    'kl_ref_mean': kl_ref_mean,
+                    'kl_term_total': kl_beta * kl_ref_mean,
+                })
             values_np = values_all.cpu()
             rewards_np = rewards.cpu()
             dones_np = dones.cpu()
@@ -437,6 +482,7 @@ def train_ppo():
                 mb_logp_old = logp_old[idx]
                 mb_adv = advantages[idx]
                 mb_ret = returns[idx]
+                mb_ref_logits = ref_logits_all[idx] if ref_logits_all is not None else None
 
                 with torch.autocast(device.type, enabled=enable_amp):
                     phi = mortal(mb_obs)
@@ -453,6 +499,8 @@ def train_ppo():
                         c_vf=ppo_cfg['c_vf'],
                         c_ent=ppo_cfg['c_ent'],
                         huber_delta=ppo_cfg['huber_delta'],
+                        kl_beta=kl_beta,
+                        ref_logits=mb_ref_logits,
                     )
 
                 for name, val in losses.items():

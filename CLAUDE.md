@@ -714,6 +714,18 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
   スクリプト・GPU 使用検証は第3枠完走後の発進 preflight に統合、を規定）。
   **DRCA 第2枠の重複キー2分岐点は「別実分岐点・分離扱い（485点）」で裁定確定**
   （frame2 レポート §4 に記録。第2枠に未決事項なし）。実装・発進は別タスク
+- **anchor 系列 実装完了**（2026-07-25、実装・CPU 検証のみ・**未発進**）:
+  Arm C（opponent pool へ init 常駐 `anchor_prob=0.25`）+ Arm K（`ppo_loss` へ
+  masked full KL `kl_beta=0.1`）の両配線、検定 (19)(20) 追加（17d eval dump に
+  `anchor_prob`/`kl_beta` assert 同居）、config/launcher（`ppo_anchor_c.toml` /
+  `ppo_anchor_k.toml`、`run_ppo_anchor_c.sh` / `run_ppo_anchor_k.sh`）、
+  発進ゲート `check_anchor_launch_gate.py`（機械ゲートのみ @step200）。
+  両介入デフォルト OFF = 既存経路ビット不変。libriichi・client rollout 経路・
+  報酬3ストリーム・DRCA ハーネス・既存検定(1)–(18)ロジック無変更。
+  **ローカル WSL CPU 検証**: 検定(19)(20) PASS、launcher bash -n PASS、
+  config diff（stage1 との差分 = run パス + arm 1変数のみ）確認済み。
+  verify 全20本・400-step スモーク（K 配管）は **DRCA 第3枠完走後の
+  発進 preflight** に統合（GPU 1系統ルール）。発進は別タスク
 
 ## 残タスク（バックログ、2026-07-16 時点）
 
@@ -791,10 +803,10 @@ Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）�
    Stage3 判定確定により着手条件充足）**。設計ドラフトは `drca_probe_design.md`
    （2026-07-12 commit）、実装は採取・並走・集計ハーネス3本・学習コード無変更が目標
 9. **anchor 系列（アンカー付き PPO、基礎劣化対策）— 現行の優先軸**:
-   設計凍結済み（2026-07-25、`anchored_ppo_design.md`）。残り:
-   実装（Composer/Sonnet、`freeparlor/docs/ops/anchor_impl_task_20260725.md`）→
-   監督3段検証 → DRCA 第3枠完走後に Arm C 発進（preflight で verify 全検定 +
-   K スモーク配管検査）→ C 判定 → K 発進 → K 判定 → 0b 接続
+   設計凍結済み（2026-07-25、`anchored_ppo_design.md`）。~~実装~~ **消化済み
+   （2026-07-25、「現在の状態」節参照）**。残り:
+   DRCA 第3枠完走 → 監督3段検証（verify 全20本 + K 400-step スモーク）→
+   Arm C 発進 → C 判定 → K 発進 → K 判定 → 0b 接続
 
 ## 役割分担
 

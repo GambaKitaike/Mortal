@@ -38,7 +38,10 @@ from ppo import (
     call_bonus_coeff,
     compose_kyoku_reward,
     compute_gae,
+    masked_kl_forward,
+    masked_log_softmax,
     masked_softmax,
+    ppo_loss,
 )
 from ppo_engine import (
     PPOEngine,
@@ -1506,9 +1509,16 @@ def check_p_enrich(buf: StringIO):
     assert eval_dump['call_bonus_b'] == 0.0, (
         f"eval dump call_bonus_b={eval_dump['call_bonus_b']} != 0.0"
     )
+    assert eval_dump['anchor_prob'] == 0.0, (
+        f"eval dump anchor_prob={eval_dump['anchor_prob']} != 0.0"
+    )
+    assert eval_dump['kl_beta'] == 0.0, (
+        f"eval dump kl_beta={eval_dump['kl_beta']} != 0.0"
+    )
     log(
         f"  (d) PASS: eval engine config dump p_enrich={eval_dump['p_enrich']} "
-        f"call_bonus_b={eval_dump['call_bonus_b']}",
+        f"call_bonus_b={eval_dump['call_bonus_b']} "
+        f"anchor_prob={eval_dump['anchor_prob']} kl_beta={eval_dump['kl_beta']}",
         buf,
     )
 
@@ -1607,6 +1617,229 @@ def check_call_bonus(buf: StringIO):
     log('  PASS: Stage3 call bonus (18)', buf)
 
 
+def _legacy_pool_sample(pool) -> Path | None:
+    """Pre-anchor OpponentPool.sample() logic for OFF identity checks."""
+    import random
+    from pathlib import Path
+
+    cks = pool.list_checkpoints()
+    if not cks:
+        return pool.fallback_checkpoint
+    latest = cks[-1]
+    if len(cks) == 1 or random.random() < pool.latest_prob:
+        return latest
+    past = cks[-(pool.past_k + 1):-1]
+    if not past:
+        return latest
+    return random.choice(past)
+
+
+def check_anchor_pool(buf: StringIO):
+    """(19) Anchor opponent pool (anchored_ppo_design.md §2/§4):
+    (a) OFF identity, (b) anchor_prob=1.0 always anchor, (c) binomial rate."""
+    import random
+    from opponent_pool import OpponentPool
+
+    log('(19) Anchor opponent pool', buf)
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_anchor_') as tmp:
+        ckpt_dir = Path(tmp)
+        init0 = ckpt_dir / 'step_000000.pth'
+        anchor = ckpt_dir / 'anchor.pth'
+        step1 = ckpt_dir / 'step_000001.pth'
+        for p in (init0, anchor, step1):
+            torch.save({'mortal': {}, 'actor_critic': {}, 'steps': 0}, p)
+
+        # (a) OFF: anchor_prob=0.0 and key-absent default must match legacy series.
+        for label, kwargs in (
+            ('explicit 0.0', {'anchor_prob': 0.0, 'anchor_checkpoint': None}),
+            ('key absent', {}),
+        ):
+            for seed in (0, 1, 42, 99):
+                random.seed(seed)
+                pool_off = OpponentPool(
+                    ckpt_dir,
+                    past_k=2,
+                    latest_prob=0.5,
+                    fallback_checkpoint=init0,
+                    **kwargs,
+                )
+                off_series = [pool_off.sample() for _ in range(50)]
+
+                random.seed(seed)
+                pool_legacy = OpponentPool(
+                    ckpt_dir, past_k=2, latest_prob=0.5, fallback_checkpoint=init0,
+                )
+                legacy_series = [_legacy_pool_sample(pool_legacy) for _ in range(50)]
+                assert off_series == legacy_series, (
+                    f'OFF identity failed ({label}, seed={seed}): '
+                    f'{off_series[:5]} != {legacy_series[:5]}'
+                )
+            log(f'  (a) PASS: {label} sample() series == legacy (seeds 0,1,42,99)', buf)
+
+        # (b) anchor_prob=1.0 -> always anchor checkpoint.
+        pool_on = OpponentPool(
+            ckpt_dir,
+            past_k=2,
+            latest_prob=0.5,
+            fallback_checkpoint=init0,
+            anchor_prob=1.0,
+            anchor_checkpoint=anchor,
+        )
+        for _ in range(20):
+            got = pool_on.sample()
+            assert got == anchor, f'anchor_prob=1.0 returned {got} != {anchor}'
+        log(f'  (b) PASS: anchor_prob=1.0 always returns {anchor.name}', buf)
+
+        # (c) intermediate anchor_prob: binomial validity (n=2000, p=0.25).
+        pool_mid = OpponentPool(
+            ckpt_dir,
+            past_k=2,
+            latest_prob=0.5,
+            fallback_checkpoint=init0,
+            anchor_prob=0.25,
+            anchor_checkpoint=anchor,
+        )
+        n_trials = 2000
+        n_anchor = sum(1 for _ in range(n_trials) if pool_mid.sample() == anchor)
+        rate = n_anchor / n_trials
+        # 99.7% binomial interval ~ [0.19, 0.31] for n=2000, p=0.25.
+        assert 0.19 <= rate <= 0.31, (
+            f'anchor draw rate {rate:.4f} outside binomial sanity band [0.19, 0.31]'
+        )
+        log(
+            f'  (c) PASS: anchor_prob=0.25 empirical rate={rate:.4f} '
+            f'({n_anchor}/{n_trials}) in [0.19, 0.31]',
+            buf,
+        )
+
+        # loud FAIL: anchor_prob>0 with missing checkpoint.
+        try:
+            OpponentPool(
+                ckpt_dir,
+                anchor_prob=0.25,
+                anchor_checkpoint='/nonexistent/anchor.pth',
+            )
+            raise AssertionError('expected ValueError for missing anchor checkpoint')
+        except ValueError:
+            pass
+        log('  (c) PASS: anchor_prob>0 + missing checkpoint -> loud ValueError', buf)
+
+    log('  PASS: Anchor opponent pool (19)', buf)
+
+
+def check_kl_anchor(buf: StringIO):
+    """(20) KL anchor term (anchored_ppo_design.md §3/§4):
+    (a) OFF bit identity, (b) masked KL hand calc, (c) ref no-grad."""
+    log('(20) KL anchor loss term', buf)
+
+    device = torch.device('cpu')
+    torch.manual_seed(20260725)
+    n = 8
+    logits = torch.randn(n, ACTION_SPACE, device=device, requires_grad=True)
+    ref_logits = torch.randn(n, ACTION_SPACE, device=device)
+    values = torch.randn(n, device=device, requires_grad=True)
+    masks = torch.zeros(n, ACTION_SPACE, dtype=torch.bool, device=device)
+    actions = torch.zeros(n, dtype=torch.long, device=device)
+    for i in range(n):
+        legal = torch.randperm(ACTION_SPACE)[:5]
+        masks[i, legal] = True
+        actions[i] = legal[torch.randint(0, legal.numel(), (1,)).item()]
+    logp_old = action_log_probs(logits.detach(), masks, actions)
+    advantages = torch.randn(n, device=device)
+    returns = torch.randn(n, device=device)
+
+    def _losses_equal(a: dict, b: dict) -> bool:
+        if set(a.keys()) != set(b.keys()):
+            return False
+        for key in a:
+            va, vb = a[key], b[key]
+            if not torch.allclose(va, vb, equal_nan=True):
+                return False
+        return True
+
+    # (a) OFF: kl_beta=0.0 must return identical dict (keys + values).
+    loss_off_a = ppo_loss(
+        logits, values, actions, masks, logp_old, advantages, returns,
+    )
+    loss_off_b = ppo_loss(
+        logits, values, actions, masks, logp_old, advantages, returns,
+        kl_beta=0.0,
+        ref_logits=ref_logits,
+    )
+    assert set(loss_off_a.keys()) == set(loss_off_b.keys()) == {
+        'total', 'policy_loss', 'value_loss', 'entropy',
+    }
+    assert _losses_equal(loss_off_a, loss_off_b), 'OFF dict values differ'
+    log('  (a) PASS: kl_beta=0.0 dict keys/values bit-identical (ref_logits ignored)', buf)
+
+    # (b) masked KL hand calculation + ref=pi -> KL=0 + single-legal mask.
+    logits_det = logits.detach()
+    hand_kl = masked_kl_forward(logits_det, ref_logits, masks)
+    probs = masked_softmax(logits_det, masks)
+    logp = masked_log_softmax(logits_det, masks)
+    logp_ref = masked_log_softmax(ref_logits, masks)
+    expected = (probs * (logp - logp_ref)).masked_fill(~masks, 0.0).sum(-1).mean()
+    assert torch.allclose(hand_kl, expected, atol=1e-6, equal_nan=True), (
+        f'hand KL {hand_kl.item()} != {expected.item()}'
+    )
+
+    same_kl = masked_kl_forward(logits_det, logits_det, masks)
+    assert abs(same_kl.item()) < 1e-5, f'ref=pi KL={same_kl.item()} != 0'
+
+    single_mask = torch.zeros(1, ACTION_SPACE, dtype=torch.bool, device=device)
+    single_mask[0, 7] = True
+    single_logits = torch.randn(1, ACTION_SPACE, device=device)
+    single_kl = masked_kl_forward(single_logits, single_logits + 0.5, single_mask)
+    assert torch.isfinite(single_kl), 'single-legal mask KL must be finite'
+    log(
+        f'  (b) PASS: hand KL match (atol=1e-6), ref=pi KL={same_kl.item():.2e}, '
+        f'single-legal finite',
+        buf,
+    )
+
+    # (c) beta>0: ref parameters receive no gradient.
+    ref_brain = Brain(version=4, conv_channels=192, num_blocks=40).to(device)
+    ref_ac = ActorCritic(version=4, tau=1.0).to(device)
+    ref_brain.requires_grad_(False)
+    ref_ac.requires_grad_(False)
+    ref_brain.eval()
+    ref_ac.eval()
+    train_brain = Brain(version=4, conv_channels=192, num_blocks=40).to(device)
+    train_ac = ActorCritic(version=4, tau=1.0).to(device)
+    c, w = obs_shape(4)
+    obs_mb = torch.randn(4, c, w, device=device)
+    mb_masks = masks[:4]
+    phi_ref = ref_brain(obs_mb)
+    ref_logits_mb, _ = ref_ac(phi_ref, mb_masks)
+    phi_train = train_brain(obs_mb)
+    train_logits, train_values = train_ac(phi_train, mb_masks)
+    mb_actions = actions[:4]
+    mb_logp_old = logp_old[:4]
+    mb_adv = advantages[:4]
+    mb_ret = returns[:4]
+    losses = ppo_loss(
+        train_logits,
+        train_values,
+        mb_actions,
+        mb_masks,
+        mb_logp_old,
+        mb_adv,
+        mb_ret,
+        kl_beta=0.1,
+        ref_logits=ref_logits_mb,
+    )
+    losses['total'].backward()
+    for p in ref_brain.parameters():
+        assert p.grad is None, 'ref_brain param received gradient'
+    for p in ref_ac.parameters():
+        assert p.grad is None, 'ref_ac param received gradient'
+    assert any(p.grad is not None for p in train_brain.parameters()), 'train_brain got no grad'
+    log('  (c) PASS: kl_beta=0.1 ref frozen (grad None), train params got grad', buf)
+
+    log('  PASS: KL anchor loss term (20)', buf)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', default=DEFAULT_CKPT)
@@ -1645,9 +1878,12 @@ def main():
     check_optimizer_resume(buf)
     check_p_enrich(buf)
     check_call_bonus(buf)
+    check_anchor_pool(buf)
+    check_kl_anchor(buf)
 
     log('', buf)
-    log('ALL 18 CHECKS PASSED', buf)
+    passed = 20
+    log(f'ALL {passed} CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'reports' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
     return 0
