@@ -66,6 +66,16 @@ RANK_PTS = (35.0, 5.0, -15.0, -25.0)
 
 CHIP_VALUE = 5.0  # チップ1枚 = 5000点相当 = 5.0 (千点単位)
 
+# 理論ミラー値: 全4席が同一方策の対称対戦 (X vs 3X) での challenger 視点期待値。
+# 座席対称性から順位点・チップは 0、素点は返し点オフセット (INIT-RETURN)/1000。
+# ミラー較正脚 (backlog 5): 実測がこの理論値から SE 圏内に収まることを確認し、
+# レンズ3 (メタ対決) の「理論ミラー値からの逸脱」解釈のゼロ点をハーネス実測で
+# 裏取りする (座席ローテの非対称・有限標本バイアスの検出)。
+MIRROR_SOTENSU = (INIT_SCORE - RETURN_SCORE) / 1000.0  # = -5.0
+MIRROR_RANK_PTS = 0.0
+MIRROR_CHIP = 0.0
+MIRROR_COMBINED = MIRROR_SOTENSU + MIRROR_RANK_PTS + MIRROR_CHIP * CHIP_VALUE  # = -5.0
+
 
 class LogFormatError(RuntimeError):
     """ログ形式が本スクリプトの想定と食い違う場合に loud に投げる。"""
@@ -242,6 +252,38 @@ def build_report(results: list[HanchanResult]) -> list[str]:
     return lines
 
 
+def calibration_lines(results: list[HanchanResult], k_se: float = 2.0) -> tuple[list[str], bool]:
+    """ミラー較正: 各ストリーム平均を理論ミラー値と SE 単位で比較 (backlog 5)。
+    X vs 3X の対称対戦ログに適用する前提。|z|<=k_se なら PASS。戻り値は
+    (出力行, 全ストリーム PASS か)。"""
+    checks = (
+        ("sotensu", [r.sotensu for r in results], MIRROR_SOTENSU),
+        ("rank_pts", [r.rank_pts for r in results], MIRROR_RANK_PTS),
+        ("chip", [r.chip_total for r in results], MIRROR_CHIP),
+        ("combined", [r.combined for r in results], MIRROR_COMBINED),
+    )
+    lines = [
+        f"# mirror calibration (theoretical: sotensu={MIRROR_SOTENSU:.1f} "
+        f"rank_pts={MIRROR_RANK_PTS:.1f} chip={MIRROR_CHIP:.1f} "
+        f"combined={MIRROR_COMBINED:.1f}); band=+/-{k_se:g}SE"
+    ]
+    all_ok = True
+    for name, vals, theo in checks:
+        mean, se, _ = mean_se(vals)
+        dev = mean - theo
+        z = dev / se if se > 0 else float("inf")
+        ok = abs(z) <= k_se
+        all_ok = all_ok and ok
+        lines.append(f"mirror_{name}_mean={mean:.4f}")
+        lines.append(f"mirror_{name}_theory={theo:.4f}")
+        lines.append(f"mirror_{name}_se={se:.4f}")
+        lines.append(f"mirror_{name}_dev={dev:.4f}")
+        lines.append(f"mirror_{name}_z={z:.4f}")
+        lines.append(f"mirror_{name}_within_band={'PASS' if ok else 'FAIL'}")
+    lines.append(f"mirror_calibration_overall={'PASS' if all_ok else 'FAIL'}")
+    return lines, all_ok
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -250,6 +292,18 @@ def main() -> None:
         help="OneVsThree game_logs ディレクトリ ({seed}_{key}_{split}.json.gz 群)",
     )
     ap.add_argument("-o", "--output", type=Path, default=None, help="key=value 出力の書き出し先")
+    ap.add_argument(
+        "--mirror-calibration",
+        action="store_true",
+        help="ミラー較正脚 (backlog 5): 各ストリーム平均を理論ミラー値と SE 単位で比較。"
+        " X vs 3X の対称対戦ログに適用する",
+    )
+    ap.add_argument("--k-se", type=float, default=2.0, help="較正バンド幅 (SE 単位, default 2.0)")
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="--mirror-calibration で FAIL 時に exit 1 (default: 報告のみ)",
+    )
     args = ap.parse_args()
 
     files = sorted(args.game_logs_dir.glob("*.json.gz"))
@@ -259,12 +313,19 @@ def main() -> None:
     results = [process_hanchan(path) for path in files]
 
     lines = build_report(results)
+    calibration_ok = True
+    if args.mirror_calibration:
+        cal, calibration_ok = calibration_lines(results, k_se=args.k_se)
+        lines += [""] + cal
     text = "\n".join(lines) + "\n"
     print(text, end="")
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text)
         print(f"Wrote {args.output}", file=sys.stderr)
+
+    if args.mirror_calibration and args.strict and not calibration_ok:
+        raise SystemExit("FATAL: mirror calibration FAILED (see mirror_* lines above)")
 
 
 if __name__ == "__main__":
