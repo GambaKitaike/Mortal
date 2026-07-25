@@ -32,6 +32,7 @@ class PPOOpponentPoolEngine:
         enable_rule_based_agari_guard=False,
         name='opp_pool',
         eval_mode=False,
+        draw_log_path=None,
     ):
         self.device = device or torch.device('cpu')
         self.pool = pool
@@ -42,6 +43,7 @@ class PPOOpponentPoolEngine:
         self.enable_rule_based_agari_guard = enable_rule_based_agari_guard
         self.name = name
         self.eval_mode = eval_mode
+        self.draw_log_path = draw_log_path
         self._conv_channels = brain.encoder.net[0].out_channels
         self._num_blocks = len([
             layer for layer in brain.encoder.net
@@ -91,8 +93,26 @@ class PPOOpponentPoolEngine:
 
     def _ckpt_for_game(self, game_key: str) -> Path | None:
         if game_key not in self._game_ckpt:
-            self._game_ckpt[game_key] = self.pool.sample()
+            ckpt = self.pool.sample()
+            self._game_ckpt[game_key] = ckpt
+            self._log_pool_draw(game_key, ckpt)
         return self._game_ckpt[game_key]
+
+    def _log_pool_draw(self, game_key: str, ckpt: Path | None):
+        if not self.draw_log_path:
+            return
+        import json
+        from datetime import datetime, timezone
+
+        record = {
+            'event': 'pool_draw',
+            'game_key': game_key,
+            'draw_kind': self.pool.last_draw_kind,
+            'checkpoint': str(ckpt) if ckpt is not None else None,
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+        }
+        with open(self.draw_log_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
     def _prune_game_ckpt(self, step_meta):
         if len(self._game_ckpt) <= self._GAME_CKPT_LIMIT:

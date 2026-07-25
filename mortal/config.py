@@ -35,12 +35,16 @@ _ppo_defaults = {
     'init_checkpoint': '',
     'trajectory_glob': '',
     'max_steps': 0,
+    'kl_beta': 0.0,
+    'kl_ref_checkpoint': '',
 }
 config.setdefault('ppo', {}).update({k: v for k, v in _ppo_defaults.items() if k not in config.get('ppo', {})})
 _opp_pool_defaults = {
     'enabled': False,
     'past_k': 5,
     'latest_prob': 0.5,
+    'anchor_prob': 0.0,
+    'anchor_checkpoint': '',
 }
 config.setdefault('opponent_pool', {}).update(
     {k: v for k, v in _opp_pool_defaults.items() if k not in config.get('opponent_pool', {})},

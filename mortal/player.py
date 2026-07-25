@@ -240,11 +240,16 @@ class TrainPlayer:
         ckpt_dir = path.join(run_dir, 'checkpoints')
         init0 = path.join(ckpt_dir, 'step_000000.pth')
         fallback = init0 if path.isfile(init0) else config['ppo'].get('init_checkpoint')
+        anchor_prob = float(self._opp_pool_cfg.get('anchor_prob', 0.0))
+        anchor_ckpt_raw = self._opp_pool_cfg.get('anchor_checkpoint') or ''
+        anchor_checkpoint = anchor_ckpt_raw if anchor_ckpt_raw else None
         pool = OpponentPool(
             ckpt_dir,
             past_k=int(self._opp_pool_cfg.get('past_k', 5)),
             latest_prob=float(self._opp_pool_cfg.get('latest_prob', 0.5)),
             fallback_checkpoint=fallback,
+            anchor_prob=anchor_prob,
+            anchor_checkpoint=anchor_checkpoint,
         )
         version = self.chal_version
         conv_channels = config['resnet']['conv_channels']
@@ -252,6 +257,14 @@ class TrainPlayer:
         brain = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks)
         actor_critic = ActorCritic(version=version, tau=config['ppo']['tau_init'])
         from ppo_engine import dump_engine_config
+
+        profile = os.environ.get('TRAIN_PLAY_PROFILE', 'default')
+        run_dir = path.dirname(path.dirname(self.log_dir))
+        draw_log_path = None
+        if anchor_prob > 0.0:
+            draw_log_dir = path.join(run_dir, 'logs')
+            os.makedirs(draw_log_dir, exist_ok=True)
+            draw_log_path = path.join(draw_log_dir, f'pool_draw_{profile}.jsonl')
 
         opp = PPOOpponentPoolEngine(
             brain,
@@ -263,6 +276,7 @@ class TrainPlayer:
             enable_amp=True,
             name='opp_pool',
             eval_mode=False,
+            draw_log_path=draw_log_path,
         )
         opp_cfg = dump_engine_config(opp)
         logging.info(f'opponent pool engine config dump: {opp_cfg}')

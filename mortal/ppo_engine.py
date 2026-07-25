@@ -55,6 +55,14 @@ def dump_engine_config(engine) -> dict:
         # attribute, so it always dumps 0.0; the dump exists so verify can
         # assert the eval path is never contaminated (check 17d / 18).
         'call_bonus_b': float(getattr(engine, 'call_bonus_b', 0.0)),
+        # Anchor series (anchored_ppo_design.md). Pool engines carry anchor_* on
+        # pool; trainee/eval engines omit them (= 0.0/'' = OFF).
+        'anchor_prob': float(getattr(getattr(engine, 'pool', None), 'anchor_prob', 0.0)),
+        'anchor_checkpoint': str(
+            getattr(getattr(engine, 'pool', None), 'anchor_checkpoint', '') or '',
+        ),
+        # KL anchor is trainer-side only; engines never carry kl_beta.
+        'kl_beta': float(getattr(engine, 'kl_beta', 0.0)),
     }
 
 

@@ -21,11 +21,22 @@ class OpponentPool:
         past_k: int = 5,
         latest_prob: float = 0.5,
         fallback_checkpoint: str | Path | None = None,
+        anchor_prob: float = 0.0,
+        anchor_checkpoint: str | Path | None = None,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         self.past_k = past_k
         self.latest_prob = latest_prob
         self.fallback_checkpoint = Path(fallback_checkpoint) if fallback_checkpoint else None
+        self.anchor_prob = float(anchor_prob)
+        self.anchor_checkpoint = Path(anchor_checkpoint) if anchor_checkpoint else None
+        self.last_draw_kind: str | None = None
+        if self.anchor_prob > 0.0:
+            if self.anchor_checkpoint is None or not self.anchor_checkpoint.is_file():
+                raise ValueError(
+                    f'anchor_prob={self.anchor_prob} > 0 but anchor_checkpoint is missing or not a file: '
+                    f'{anchor_checkpoint!r}'
+                )
 
     def list_checkpoints(self) -> list[Path]:
         if not self.ckpt_dir.is_dir():
@@ -34,15 +45,22 @@ class OpponentPool:
         return sorted(cks, key=lambda p: int(_STEP_RE.search(p.name).group(1)))
 
     def sample(self) -> Path | None:
+        if self.anchor_prob > 0.0 and random.random() < self.anchor_prob:
+            self.last_draw_kind = 'anchor'
+            return self.anchor_checkpoint
         cks = self.list_checkpoints()
         if not cks:
+            self.last_draw_kind = 'fallback'
             return self.fallback_checkpoint
         latest = cks[-1]
         if len(cks) == 1 or random.random() < self.latest_prob:
+            self.last_draw_kind = 'latest'
             return latest
         past = cks[-(self.past_k + 1):-1]
         if not past:
+            self.last_draw_kind = 'latest'
             return latest
+        self.last_draw_kind = 'past'
         return random.choice(past)
 
     def load_ppo(self, checkpoint: Path | None, brain, actor_critic, *, map_location='cpu') -> bool:
