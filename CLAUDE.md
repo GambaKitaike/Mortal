@@ -726,6 +726,24 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
   config diff（stage1 との差分 = run パス + arm 1変数のみ）確認済み。
   verify 全20本・400-step スモーク（K 配管）は **DRCA 第3枠完走後の
   発進 preflight** に統合（GPU 1系統ルール）。発進は別タスク
+- **anchor 実装の監督3段検証: Arm C 合格 / Arm K 差し戻し**（2026-07-25 夜、
+  監督側・CPU のみ・進行中の第3枠に非干渉）: **Arm C は合格**（OFF 時に
+  `random.random()` 非消費の短絡・旧実装との RNG ストリーム同一性・anchor 不在の
+  loud ValueError・レガシー mortal.pth 読み込み・config 単一変数 diff・launcher
+  bash -n・eval 3本の assert を独立再実行で確認）。**Arm K は発進すれば最初の
+  optimizer step で NaN 化するブロッカーを検出**: `masked_kl_forward` が非合法手で
+  `(-inf)-(-inf)=NaN` を作り、`masked_fill` が前向き値のみ修復するため逆伝播で
+  `grad_probs = 0*NaN = NaN` が全体に伝播（実測: 実物 192×40 + kl_beta=0.1 で
+  total 損失は有限に見えるのに **train パラメータ 409/411 が非有限勾配**）。
+  検定(20) が通した理由も特定 — (c) は `grad is not None` のみで有限性未検査、
+  (b) は実装と同じヘルパで同じ式を再現する循環検証。修正方向（積の前に
+  `masked_fill`）は前向き値一致・NaN 解消を監督側で実測済み。**副次発見:
+  発進ゲート Arm K の `kl_ref_mean > 0` は step 0 で必ず落ちる**（trainer は
+  policy/ref とも eval モード固定、step 0 の state_dict はビット同一 →
+  実測 `kl_ref_mean = 0.0` ちょうど）。これは凍結 §5 の**設計側文言の欠陥**であり
+  Stage3 ゲート v1→v2 と同様に **Gamba 裁定の amendment 待ち**（実装は触らない）。
+  差し戻しプロンプト `freeparlor/docs/ops/anchor_impl_rework_20260725.md`。
+  進行中の DRCA 第3枠は検証前後で 3 プロセス稼働・divergence 0 を確認
 
 ## 残タスク（バックログ、2026-07-16 時点）
 
@@ -803,10 +821,13 @@ Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）�
    Stage3 判定確定により着手条件充足）**。設計ドラフトは `drca_probe_design.md`
    （2026-07-12 commit）、実装は採取・並走・集計ハーネス3本・学習コード無変更が目標
 9. **anchor 系列（アンカー付き PPO、基礎劣化対策）— 現行の優先軸**:
-   設計凍結済み（2026-07-25、`anchored_ppo_design.md`）。~~実装~~ **消化済み
-   （2026-07-25、「現在の状態」節参照）**。残り:
-   DRCA 第3枠完走 → 監督3段検証（verify 全20本 + K 400-step スモーク）→
-   Arm C 発進 → C 判定 → K 発進 → K 判定 → 0b 接続
+   設計凍結済み（2026-07-25、`anchored_ppo_design.md`）。~~実装~~ **一次実装済み
+   → 監督3段検証で Arm C 合格・Arm K 差し戻し（2026-07-25 夜、「現在の状態」節参照）**。
+   残り: (a) **Arm K の NaN 勾配修正 + 検定(20)強化 + pool_draw 競合**
+   （実装エージェント、`freeparlor/docs/ops/anchor_impl_rework_20260725.md`、CPU 完結）、
+   (b) **発進ゲート §5 `kl_ref_mean > 0` の amendment 裁定**（Gamba/監督。step 0 で
+   必ず落ちる設計側欠陥）、(c) DRCA 第3枠完走 → 発進 preflight（verify 全20本 +
+   K 400-step 配管スモーク）→ Arm C 発進 → C 判定 → K 発進 → K 判定 → 0b 接続
 
 ## 役割分担
 
