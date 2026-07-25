@@ -782,6 +782,30 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
   kill して除去済み。教訓: 実装タスクでも GPU 使用禁止を明示した場合、報告に
   現れない実行がありうる — 発進前の残党チェックは実装完了報告の後にも必須
 
+- **anchor Arm C 発進・機械ゲート通過・凍結中（2026-07-25 17:03:10 JST 発進）**:
+  run dir `/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756`、tmux セッション
+  `ppo_anchor_c_20260725_164756`、GPU = RTX 5060。init = beta1_huber_192x40。
+  config は `freeparlor/configs/ppo_anchor_c.toml`（プレースホルダを launcher が
+  run パスへ in-place 解決。stage1 config との diff は run パス + `[opponent_pool]`
+  の `anchor_prob=0.25` / `anchor_checkpoint`(=init と同一パス) のみ。`kl_beta` は
+  キー不在＝設計された OFF）。**発進前 preflight**（launcher が自動実行）: 残党
+  チェック・port5000 clear・libriichi rebuild（CARGO_TARGET_DIR=repo/target 強制、
+  PYO3_PYTHON=mortal env）+ import smoke・**`verify_ppo_p1.py` 全20検定 PASS**
+  （所要 ~15分）。**機械ゲート（@step200）通過**: anchor 採択率 **0.2393**
+  （67/280 draw、期待 0.25±0.05）、anchor が返す checkpoint は全て init で一致。
+  opponent pool engine 構成 dump = `anchor_prob:0.25 / p_enrich:0.0 /
+  call_bonus_b:0.0 / kl_beta:0.0 / eval_mode:False`。step 219 時点で監視4項目
+  （mismatch / illegal_action_fallback / chip 解決失敗 / trainer NaN）全て 0、
+  alive clients 3/3。**凍結宣言済み: step 16000 完走までコード・config 変更禁止**
+  （例外はクラッシュとデータ整合性の破れのみ）。**判定窓は step 8000–16000**
+  （`anchored_ppo_design.md` §6: 放銃差 z<2 + チップ +方向≥1SE、1v3 両脚 n=800）。
+  完走・eval・判定は別タスク。**発進試行1・2回目は preflight で FATAL 停止**
+  （非対話シェル由来で tmux に conda / cargo が未継承。訓練開始前・データ生成なし。
+  config placeholder は git checkout で復元、run dir は規約どおり
+  `aborted1_anchor_c_20260725_164338` / `aborted2_anchor_c_20260725_164551` として
+  保全）。**Arm K の 400-step 配管スモークは未実施**（GPU 1系統ルールにより
+  Arm C 走行中は不可 → K の発進前 preflight に統合）
+
 ## 残タスク（バックログ、2026-07-16 時点）
 
 Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）に伴う
@@ -862,8 +886,11 @@ Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）�
    修正~~ **消化済み（2026-07-25、「現在の状態」節参照）** — Arm C 合格・Arm K 修正
    完了（NaN 勾配・検定(20)・§5-a1 ゲート・pool_draw 競合）。
    ~~(b) 発進ゲート amendment~~ **消化済み（§5-a1）**。
-   残り: DRCA 第3枠完走 → 発進 preflight（verify 全20本 +
-   K 400-step 配管スモーク）→ Arm C 発進 → C 判定 → K 発進 → K 判定 → 0b 接続
+   ~~Arm C 発進~~ **消化済み（2026-07-25 17:03、機械ゲート通過・凍結中 —
+   「現在の状態」節参照）**。残り: C 完走（step16000）→ C の eval バッテリー
+   （argmax 6ckpt + 1v3 n=800 + ミラー較正脚 + メタ対決）→ C 判定 →
+   K の発進 preflight（verify 全20本 + **400-step 配管スモーク**）→ K 発進 →
+   K 判定 → 0b 接続
 
 ## 役割分担
 

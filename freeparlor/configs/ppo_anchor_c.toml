@@ -1,8 +1,8 @@
 # PPO Anchor Arm C — opponent pool init anchor (anchored_ppo_design.md §2)
 # diff vs stage1 config (freeparlor/configs/ppo_p3_stage1.toml): run paths
-# (placeholder `anchor_c_PENDING_LAUNCH`) and [opponent_pool] anchor 2 keys only.
+# (placeholder `anchor_c_20260725_164756`) and [opponent_pool] anchor 2 keys only.
 #
-# Run paths below use the placeholder `anchor_c_PENDING_LAUNCH`; the launcher
+# Run paths below use the placeholder `anchor_c_20260725_164756`; the launcher
 # freeparlor/scripts/run_ppo_anchor_c.sh substitutes the real `anchor_c_<日時>`
 # run dir in place at launch. This file itself must not be edited post-launch.
 
@@ -10,9 +10,9 @@
 version = 4
 online = true
 
-state_file = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/mortal.pth'
-best_state_file = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/best.pth'
-tensorboard_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/tb'
+state_file = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/mortal.pth'
+best_state_file = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/best.pth'
+tensorboard_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/tb'
 
 device = 'cuda:0'
 enable_cudnn_benchmark = false
@@ -42,27 +42,27 @@ max_steps = 16000
 
 [train_play.default]
 games = 800
-log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/train_play/default'
+log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/train_play/default'
 repeats = 1
 
 [train_play.client0]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/train_play/client0'
+log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/train_play/client0'
 repeats = 1
 
 [train_play.client1]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/train_play/client1'
+log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/train_play/client1'
 repeats = 1
 
 [train_play.client2]
 games = 20
-log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/train_play/client2'
+log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/train_play/client2'
 repeats = 1
 
 [test_play]
 games = 400
-log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/test_play'
+log_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/test_play'
 self_play = true
 
 [dataset]
@@ -130,8 +130,8 @@ host = '127.0.0.1'
 port = 5000
 
 [online.server]
-buffer_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/buffer'
-drain_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/drain'
+buffer_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/buffer'
+drain_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/drain'
 sample_reuse_rate = 0
 sample_reuse_threshold = 0
 capacity = 1600
@@ -147,7 +147,7 @@ num_layers = 2
 [grp.control]
 device = 'cuda:0'
 enable_cudnn_benchmark = false
-tensorboard_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_PENDING_LAUNCH/grp_log'
+tensorboard_dir = '/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756/grp_log'
 batch_size = 256
 save_every = 2000
 val_steps = 400
