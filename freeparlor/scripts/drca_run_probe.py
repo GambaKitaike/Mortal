@@ -89,11 +89,17 @@ SPLITS = ['a', 'b', 'c', 'd']
 
 
 def branch_identity(branch: dict) -> tuple:
-    return (branch['game_key'], branch['branch_role'], branch['branch_seq'])
+    # (game_key, role, seq) は champion の slot 間で衝突し得る（各 slot の seq が
+    # 独立 0 起算）。seat を加えた 4-tuple で一意化する — drca_aggregate.py の
+    # branch_key と同一の識別子。衝突時、旧 3-tuple の --resume は両分岐点の
+    # 2K+2K rollouts を「不完全」と誤判定して破棄・再走していた（データ破損はなし）。
+    return (branch['game_key'], branch['branch_role'], branch['branch_seq'],
+            branch.get('seat', -1))
 
 
 def branch_identity_from_record(record: dict) -> tuple:
-    return (record['game_key'], record['branch_role'], record['branch_seq'])
+    return (record['game_key'], record['branch_role'], record['branch_seq'],
+            record.get('seat', -1))
 
 
 def setup_logging():

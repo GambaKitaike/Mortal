@@ -33,7 +33,12 @@ def load_rollouts(path: str) -> list[dict]:
 
 
 def branch_key(record: dict) -> tuple:
-    return (record['game_key'], record['branch_role'], record['branch_seq'])
+    # champion 役は 1 game に 3 slot を持ち、各 slot の seq が独立に 0 起算のため
+    # (game_key, role, seq) は slot 間で衝突し得る（frame2 a_init で実測 1 件）。
+    # slot は物理席と 1:1 なので seat を加えた 4-tuple は一意（sidecar の digest
+    # 照合と同等の識別力。旧スキーマ行は seat 欠落時 -1 でソート可能性を保つ）。
+    return (record['game_key'], record['branch_role'], record['branch_seq'],
+            record.get('seat', -1))
 
 
 def group_by_branch(rows: list[dict]) -> dict[tuple, dict[str, list[dict]]]:
@@ -177,16 +182,17 @@ def main():
     for key, arms in sorted(grouped.items()):
         d = branch_delta(arms.get('call', []), arms.get('no_call', []))
         if d is None:
-            game_key, branch_role, branch_seq = key
+            game_key, branch_role, branch_seq, seat = key
             print(
-                f'WARNING: branch ({game_key}, {branch_role}, {branch_seq}) missing call or '
-                'no_call rollouts, skipped',
+                f'WARNING: branch ({game_key}, {branch_role}, {branch_seq}, seat={seat}) '
+                'missing call or no_call rollouts, skipped',
                 file=sys.stderr,
             )
             continue
         d['game_key'] = key[0]
         d['branch_role'] = key[1]
         d['branch_seq'] = key[2]
+        d['seat'] = key[3]
         d.update(branch_meta[key])
         deltas.append(d)
 

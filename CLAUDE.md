@@ -661,6 +661,28 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
   （Stage3 の鳴きスキルは実行品質では高くない可能性）、0b 議題1 では「鳴きが増えたが
   下手」は商品性最悪象限という暫定所見
 
+- **DRCA 第2枠（a_init）完走 + 単枠集計 + 集計キー衝突の修正**（2026-07-25、
+  集計は CPU のみ・進行中の第3枠に非干渉）: 第2枠 probe 7760/7760 完走
+  （divergence/assert/illegal_fallback 0）。単枠集計（`--expect-branch-points 485`
+  PASS、`aggregate_final.json` 保存済み）: **ΔQ̄ = −2.1353 千点、cluster SE = 0.4788、
+  |ΔQ̄|/SE = 4.46**、符号検定 214+/270−/1◦（p=0.0123）。exploratory: chi −3.14 /
+  pon −0.83(n.s.) / kan +6.41(n=12)、聴牌時 −7.05。**含意（判定ではない）: 基礎技能
+  無傷の init でも赤保持鳴きの平均反実仮想価値は有意に負 — 反鳴き均衡は基礎劣化
+  アーティファクトではなく経済の性質、が第1枠（Stage1-16000、−3.26）と挟み撃ちで確認**。
+  集計初回に安全弁が発火（484/485）→ 調査で **`(game_key, role, seq)` 3-tuple キーの
+  champion slot 間衝突**（別々の実分岐点2件が併合。9fea7a7 で文書化済みの既知構造、
+  sidecar 側は digest 照合で解決済みだが集計/resume 側が未対応だった）を特定し、
+  `drca_aggregate.py` `branch_key` / `drca_run_probe.py` `branch_identity` を
+  seat 込み 4-tuple へ修正。第1枠回帰（新キーで再集計 → commit 値と完全一致）+
+  第3枠 bp.jsonl 衝突なし確認済み。詳細は
+  `freeparlor/docs/reports/drca_frame2_a_init_aggregate_20260725.md`。
+  **第3枠（a_s3final）発進中（2026-07-25 12:02、`main_a_s3final_20260725_120218`）** —
+  Gamba 裁定によりこのまま完走させる。正式判定は実効枠揃い後・監督側
+- **方針裁定（2026-07-25、Gamba）: PPO 改造（基礎劣化対策）を優先軸に**:
+  `fundamentals_degradation_diagnosis_20260725.md` + 第2枠 a_init 結果を受け、
+  進行中の DRCA 第3枠は継続しつつ、GPU 非依存の PPO 改造準備（アンカー付き PPO の
+  設計文書ドラフト等）を先行させる方針
+
 ## 残タスク（バックログ、2026-07-16 時点）
 
 Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）に伴う
