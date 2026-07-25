@@ -83,28 +83,39 @@ kind と checkpoint がずれ得る（GIL はバイトコード間で切り替�
 - `check_anchor_launch_gate.py` の Arm C 集計を race-free な `checkpoint` フィールド
   （anchor パスとの一致）でも数え、`draw_kind` 集計と一致することを assert する
 
+## 3b. 【必須】発進ゲート Arm K を §5-a1 amendment に合わせる
+
+設計 §5 原文の「全バッチ `kl_ref_mean > 0`」は**成立し得ない**（trainer_step 0 で
+policy と ref は state_dict がビット同一 → 監督側実測で `kl_ref_mean` は厳密に 0.0）。
+**Gamba 裁定により `anchored_ppo_design.md` §5-a1 として amendment 済み**。
+`check_anchor_launch_gate.py` の `run_arm_k` を §5-a1 の3条件へ書き換えること
+（設計書 §5-a1 が正。本書の要約と食い違ったら設計書に従う）:
+
+1. 窓 W = `event='kl_anchor'` かつ `0 ≤ trainer_step ≤ 200`（W が空なら FAIL）。
+   W の全レコードで `kl_beta` == 設定値
+2. W の全レコードで `kl_ref_mean` が有限（NaN/inf なし）かつ **≥ 0**
+   （現行の `v <= 0` で FAIL する実装を is-finite + `>= 0` に改める）
+3. 後半窓 W₂ = `101 ≤ trainer_step ≤ 200` の**全レコード**で `kl_ref_mean` > 0
+   （W₂ が空なら FAIL）
+4. `trainer_step 0` の値は**合否に使わず INFO として出力**する
+   （0.0 ちょうどなら ref が step0 方策と同一である陽性対照）
+
+検証は合成 `ppo_diag.jsonl`（PASS 系1本 + FAIL 系: 窓空 / kl_beta 不一致 /
+NaN 混入 / W₂ が全部 0 の張り付き、の各経路）を CPU で作って exit code を実演すること。
+
 ## 4. 触ってはいけないもの
 
 - **Arm C の合格済み部分**（`opponent_pool.py` の anchor 分岐ロジック・config・
   launcher・検定(19)）は §3 の競合対応以外の変更禁止
-- **`check_anchor_launch_gate.py` の Arm K 側 `kl_ref_mean > 0` 条件は触るな。**
-  これは設計側 §5 の文言の欠陥（下記 §5）であり、**Gamba 裁定による amendment 待ち**。
-  実装が勝手に緩めてはならない
+- **`anchored_ppo_design.md` 本体は編集禁止**（凍結文書。§5-a1 は監督側で記録済み）
 - libriichi、`client.py` rollout 経路、報酬3ストリーム、DRCA ハーネス4本、
   既存検定 (1)–(18) のロジック、進行中の DRCA 第3枠 run
 - **GPU を使わないこと**（第3枠が占有中）。本タスクは全て CPU で完結する
 
-## 5. 参考: 設計側で並行して処理する事項（実装は関与しない）
-
-監督検証で `kl_ref_mean` は **trainer_step 0 で厳密に 0.0** と実測された
-（trainer は policy/ref とも eval モード固定、step 0 の state_dict はビット同一）。
-凍結 §5 の「kl_ref_mean > 0」を窓 [0,200] の全バッチに課すと**必ず落ちる**。
-これは設計側の文言の欠陥であり、Stage3 ゲート v1→v2 と同じく Gamba 裁定による
-明示的 amendment で処理する。**実装タスクのスコープ外。**
-
-## 6. 検証と報告
+## 5. 検証と報告
 
 1. CPU で実施し証拠を貼る: 強化後の検定 (19)(20) の実行ログ、
+   §3b のゲート合成データ実演（PASS/FAIL 各経路の exit code）、
    修正前後で `masked_kl_forward` の**前向き値が一致**することの実測、
    実物の 192×40 ネット + 疎 mask + kl_beta=0.1 で
    **全 train パラメータの勾配が有限**であることの実測

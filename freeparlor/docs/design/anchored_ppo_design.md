@@ -1,8 +1,10 @@
 # アンカー付き PPO（anchor 系列）設計書 — 基礎劣化対策の単一変数アブレーション
 
 **日付:** 2026-07-25
-**ステータス:** **凍結済み（2026-07-25、Gamba 裁定）— 本改訂 commit が事前登録。
-以後の変更禁止**（唯一の許容は §6a 再走規定の機械的適用と、その結果数値の §9 への追記）。
+**ステータス:** **凍結済み（2026-07-25、Gamba 裁定）— 凍結 commit 847dc8d が事前登録。
+以後の変更禁止**（許容されるのは §6a 再走規定の機械的適用とその結果数値の §9 への追記、
+および §5-a1 として記録済みの Arm K ゲート amendment（2026-07-25、Gamba 裁定・
+測定開始前・成立不能条件の是正）のみ）。
 実装は Composer/Sonnet へ委任（タスクプロンプト: `../ops/anchor_impl_task_20260725.md`）、
 発進は実装検証後・DRCA 第3枠完走後の別タスク
 **起草:** 実装エージェント（Claude Code / Fable）
@@ -119,9 +121,35 @@ total = policy_loss + c_vf·value_loss − c_ent·entropy + kl_beta·KL_ref
 - Arm C: 全 client の opponent 選択ログで anchor 採択率が anchor_prob ± 0.05
   （pool draw のログ出力を追加実装。n は3席×数百 draw で十分）
 - Arm K: 全バッチ kl_beta = 設定値、kl_ref_mean > 0（かつ発散兆候 NaN/inf 無し）
+  → **§5-a1 で改訂（2026-07-25、Gamba 裁定）。以下が正。**
 
 学習応答ゲートは設定しない（Stage3 v1 の較正ミス教訓: 本系列の効果量の
 事前較正データが存在しないため、恣意的な閾値は置かず判定窓で正式評価する）。
+
+### 5-a1. Arm K ゲートの amendment（2026-07-25、Gamba 裁定・測定開始前）
+
+**改訂理由:** 上記原文の「全バッチ kl_ref_mean > 0」は**成立し得ない**。π_θ は
+init から warm-start され、trainer は policy/ref とも eval モード固定
+（`train_ppo.py:71-72,189`）なので、trainer_step 0 の両者は state_dict が
+ビット同一 → `kl_ref_mean` は厳密に **0.0**（監督側が実 init checkpoint で実測）。
+原文のままでは窓の先頭で必ず落ちる。Stage3 ゲート v1→v2 と同じく、
+測定開始前の明示的 amendment として改訂する。
+
+**改訂後の Arm K 機械ゲート**（窓 W = `ppo_diag.jsonl` の `event='kl_anchor'` かつ
+`0 ≤ trainer_step ≤ 200` のレコード。W が空なら FAIL）:
+
+1. **設定反映**: W の全レコードで `kl_beta` == 設定値（0.1）
+2. **健全性**: W の全レコードで `kl_ref_mean` が有限（NaN/inf なし）かつ ≥ 0
+3. **立ち上がり**: 後半窓 W₂ = `101 ≤ trainer_step ≤ 200` の**全レコード**で
+   `kl_ref_mean` > 0（W₂ が空なら FAIL）
+
+条件3 の意図は「β は効いているが KL が 0 に張り付いたまま」という病態を通さない
+こと（窓を [1,200] へずらすだけの案はこれを検出できないため不採用）。
+`trainer_step 0` の値は**判定に使わず INFO として報告する**（0.0 ちょうどなら
+ref が step0 方策と同一であることの陽性対照。ここを合否条件にすると新たな
+偽陽性経路を増やすため、Stage3 v1 の教訓に従い条件化しない）。
+
+Arm C ゲート・判定条件（§6）・再走規定（§6a）・b/schedule は本 amendment で不変。
 
 ## 6. 判定条件（**凍結済み — 変更禁止**）
 

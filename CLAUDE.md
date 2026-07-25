@@ -740,9 +740,14 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
   `masked_fill`）は前向き値一致・NaN 解消を監督側で実測済み。**副次発見:
   発進ゲート Arm K の `kl_ref_mean > 0` は step 0 で必ず落ちる**（trainer は
   policy/ref とも eval モード固定、step 0 の state_dict はビット同一 →
-  実測 `kl_ref_mean = 0.0` ちょうど）。これは凍結 §5 の**設計側文言の欠陥**であり
-  Stage3 ゲート v1→v2 と同様に **Gamba 裁定の amendment 待ち**（実装は触らない）。
-  差し戻しプロンプト `freeparlor/docs/ops/anchor_impl_rework_20260725.md`。
+  実測 `kl_ref_mean = 0.0` ちょうど）。これは凍結 §5 の**設計側文言の欠陥**につき
+  Stage3 ゲート v1→v2 と同様に **Gamba 裁定で §5-a1 として amendment 済み**
+  （測定開始前・成立不能条件の是正）: 窓 [0,200] 全レコードで kl_beta 一致 +
+  有限かつ ≥0、**後半窓 [101,200] の全レコードで > 0**（「β は効くが KL が 0 に
+  張り付く」病態を通さないため。窓を [1,200] へずらす案は不採用）、step 0 の値は
+  合否に使わず INFO（ref=step0 方策の陽性対照）。判定条件・再走規定・Arm C
+  ゲートは不変。差し戻しプロンプト
+  `freeparlor/docs/ops/anchor_impl_rework_20260725.md`（§3b にゲート改修を追加）。
   進行中の DRCA 第3枠は検証前後で 3 プロセス稼働・divergence 0 を確認
 
 ## 残タスク（バックログ、2026-07-16 時点）
@@ -823,10 +828,11 @@ Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）�
 9. **anchor 系列（アンカー付き PPO、基礎劣化対策）— 現行の優先軸**:
    設計凍結済み（2026-07-25、`anchored_ppo_design.md`）。~~実装~~ **一次実装済み
    → 監督3段検証で Arm C 合格・Arm K 差し戻し（2026-07-25 夜、「現在の状態」節参照）**。
-   残り: (a) **Arm K の NaN 勾配修正 + 検定(20)強化 + pool_draw 競合**
-   （実装エージェント、`freeparlor/docs/ops/anchor_impl_rework_20260725.md`、CPU 完結）、
-   (b) **発進ゲート §5 `kl_ref_mean > 0` の amendment 裁定**（Gamba/監督。step 0 で
-   必ず落ちる設計側欠陥）、(c) DRCA 第3枠完走 → 発進 preflight（verify 全20本 +
+   残り: (a) **Arm K の NaN 勾配修正 + 検定(20)強化 + ゲート §5-a1 追従 +
+   pool_draw 競合**（実装エージェント、
+   `freeparlor/docs/ops/anchor_impl_rework_20260725.md`、CPU 完結）、
+   ~~(b) 発進ゲートの amendment 裁定~~ **消化済み（2026-07-25、§5-a1）**、
+   (c) DRCA 第3枠完走 → 発進 preflight（verify 全20本 +
    K 400-step 配管スモーク）→ Arm C 発進 → C 判定 → K 発進 → K 判定 → 0b 接続
 
 ## 役割分担
