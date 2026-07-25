@@ -21,7 +21,13 @@
 | `design/product_gaps_design_notes.md` | 2026-07-24 | DRAFT | 商品化設計ギャップ G1–G3 の技術検討メモ（`ops/policy_session_0b_frame.md` §5.3 の材料）。裁定非関与・実装未承認。 |
 | `design/reward_audit_teacherfree.md` | 2026-07-01 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
 
-## reports/ — 判定結果・run記録・診断（18本）
+## reports/ — 判定結果・run記録・診断（13本）
+
+> **移動時の制約（2026-07-25 追記）:** `ppo_p1_verify_log.txt` は `verify_ppo_p1.py` が
+> 出力先をハードコードしているため移動不可。`fundamentals_degradation_diagnosis_20260725.md` と
+> `drca_frame2_a_init_aggregate_20260725.md` は**凍結済みの** `design/anchored_ppo_design.md` が
+> `../reports/` の相対パスで根拠文書として参照しているため、anchor 系列の判定が終わるまで移動不可。
+> それ以外の相互参照はすべてバッククォート付きファイル名のみで、移動してもリンクは壊れない。
 
 ### 現行軸（基礎劣化 → anchor 系列）
 
@@ -50,16 +56,24 @@
 | `reports/qualitative_expert_review_20260715.md` | 2026-07-15 | exploratory | Stage1-16000 argmax自己対戦の専門家（Gamba）定性レビュー。本プロジェクト初の「絶対的な強さ」評価。 |
 | `reports/qualitative_expert_review_stage3_20260716.md` | 2026-07-16 | exploratory | Stage3-16000 argmax の定性レビュー（鳴きレパートリー増だが鳴き後が未熟・カン判断異常・降りの規律崩壊）。上記の対。 |
 
-### PPO 配管期（P1/P2、完結）
+### 生成物
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
-| `reports/ppo_p1_plumbing.md` | 2026-07-02 | closed | PPO P1配管の実装サマリ。 |
-| `reports/ppo_p1_verify_log.txt` | 随時更新 | 生成物 | `verify_ppo_p1.py` の最新実行ログ（発進preflightのたびに上書きされる）。 |
-| `reports/ppo_p2_smoke.md` | 2026-07-02 | closed | PPO P2スモーク結果（OOM対策後更新）。 |
-| `reports/ppo_p2_diag.md` | 2026-07-02 | closed | PPO P2 OOM対策後の診断再走結果。 |
-| `reports/ppo_p2b_lr_probe.md` | 2026-07-03 | closed | PPO P2b lrプローブ（fuuro崩壊のlr要因検証）。 |
-| `reports/ppo_p2c_advantage_decomp.md` | 2026-07-03 | closed | PPO P2c 宣言行動（鳴き・立直）のadvantage分解計装。 |
+| `reports/ppo_p1_verify_log.txt` | 随時更新 | 生成物 | `verify_ppo_p1.py` の最新実行ログ（発進preflightのたびに上書きされる）。**移動禁止** — 出力先が `verify_ppo_p1.py` にハードコードされている。 |
+
+## archive/ppo_p1p2/ — PPO 配管期の完結文書（5本、全て closed）
+
+2026-07-11（DRCA 実装期）以降は参照されていない、P1（配管）・P2（スモーク／プローブ）期の記録。
+本走（Stage1〜3）の判定には使わない。
+
+| パス | 日付 | 要約 |
+|---|---|---|
+| `archive/ppo_p1p2/ppo_p1_plumbing.md` | 2026-07-02 | PPO P1配管の実装サマリ。 |
+| `archive/ppo_p1p2/ppo_p2_smoke.md` | 2026-07-02 | PPO P2スモーク結果（OOM対策後更新）。 |
+| `archive/ppo_p1p2/ppo_p2_diag.md` | 2026-07-02 | PPO P2 OOM対策後の診断再走結果。 |
+| `archive/ppo_p1p2/ppo_p2b_lr_probe.md` | 2026-07-03 | PPO P2b lrプローブ（fuuro崩壊のlr要因検証）。 |
+| `archive/ppo_p1p2/ppo_p2c_advantage_decomp.md` | 2026-07-03 | PPO P2c 宣言行動（鳴き・立直）のadvantage分解計装。 |
 
 ## ops/ — 運用文書（9本）
 
@@ -121,6 +135,6 @@
 ## 分類上の注記
 
 - 初版（2026-07-10）の分類はユーザー提示の分類表（design 4本 / reports 9本 / ops 4本、明示列挙）に従い、archive/dqn は各カテゴリに明示列挙されなかった残り全部というルールで機械的に確定した。以後の追加分は同じ基準で振り分けている。
-- 本数は実カウントが正（2026-07-25 時点: design 8 / reports 18 / ops 9 / archive/dqn 36、`configs/archive` 25）。
-- reports/ の小見出し（現行軸 / DRCA / 探索ラダー / 配管期）は読者の導線のための便宜的な区分で、ディレクトリ構造は分けていない。
+- 本数は実カウントが正（2026-07-25 時点: design 8 / reports 13 / ops 9 / archive/dqn 36 / archive/ppo_p1p2 5、`configs/archive` 25）。
+- reports/ の小見出し（現行軸 / DRCA / 探索ラダー / 生成物）は読者の導線のための便宜的な区分で、ディレクトリ構造は分けていない。時代が閉じた群のみ `archive/<era>/` へ実際に退避する（dqn → ppo_p1p2 の順で運用中）。
 - 更新規律: 文書を追加・ステータス変更したら本索引も同一 commit で更新する。
