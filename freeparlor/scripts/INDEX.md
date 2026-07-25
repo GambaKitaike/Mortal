@@ -1,7 +1,7 @@
 # freeparlor/scripts/ 索引
 
 初版: 2026-07-10。**最終更新: 2026-07-25**（DRCA・anchor・eval 系の追加を反映、分類を用途別に再構成）。
-実カウント: **72本**（`.py` 43 / `.sh` 29、`__pycache__` を除く）。
+実カウント: **73本**（`.py` 44 / `.sh` 29、`__pycache__` を除く）。
 ディレクトリは**フラット構成を維持**（下記「移動禁止の理由」参照）。
 
 ## 移動禁止の理由（2026-07-25 追記）
@@ -95,13 +95,14 @@ fork-by-replay による鳴き反実仮想アドバンテージの測定ハー�
 | `run_drca_main_frame.sh` | 本測定の枠別 launcher（`a_init` / `a_s3final` / `a_s3mid` / `b_s3final`） |
 | `drca_pilot_qualitative_drilldown.py` | パイロットの分岐点別 ΔQ̂ 極値抽出（read-only・exploratory） |
 
-## aggregate/ — 判定集計・診断集計（11本）
+## aggregate/ — 判定集計・診断集計（12本）
 
 | ファイル | 内容 |
 |---|---|
 | `aggregate_stage2_judgment.py` / `aggregate_stage2_secondary.py` | Stage2 の事前登録判定 / 副次集計 |
 | `aggregate_stage3_judgment.py` / `aggregate_stage3_secondary.py` | Stage3 の事前登録判定 / 副次集計 |
-| `summarize_p3_stage1.py` / `summarize_ppo_diag.py` | Stage1 判定集計 / ppo_diag.jsonl の汎用要約 |
+| `summarize_p3_stage1.py` / `summarize_ppo_diag.py` | Stage1 判定集計 / ppo_diag.jsonl の汎用要約（**P2 期専用**。既定パスがハードコードで扱う event は `batch_lag`/`ppo_epoch` のみ。commit 済み `archive/ppo_p1p2/ppo_p2_diag.md` の再現器なので**出力書式を変えないこと**） |
+| `analyze_ppo_optimization_health.py` | **L1（最適化衛生）の横断診断**。`runs/ppo/*/logs/ppo_diag.jsonl` を横断集計して batch_size 分布と `minibatch_size` 越え率 / clip_fraction を **param snapshot age と lag で条件付けた**表（`trainer_step=0` を陽性対照に取る）/ epoch 別 clip・ratio_std / advantage_decomp のカテゴリ別サンプル数 / action_mass トレンド / **欠損 event の明示**を出す。read-only・GPU 不要。`--run` で run 指定、`--root` で走査元、`-o` で保存。回帰テストの基準は完走済み `stage3_20260712_033403`（期待値は `docs/reports/ppo_optimization_health_20260725.md` §7）|
 | `summarize_p2b_action_mass.py` / `summarize_p2c_advantage_decomp.py` | P2b/P2c の集計 |
 | `collect_ppo_p2_metrics.py` | P2 期のメトリクス収集 |
 | `parse_p2_mismatch.py` / `parse_p2_mismatch_forensic.py` | mismatch ログ解析 |

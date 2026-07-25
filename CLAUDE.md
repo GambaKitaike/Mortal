@@ -125,8 +125,35 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
   基礎技能劣化への対策として凍結 init を opponent pool に常駐させる単一変数アブレーション
 - **中断**: DRCA プローブ本測定（実効5枠のうち2枠のみ完了、§5a-1c で打ち切り裁定）
 - **閉幕**: 探索ラダー Stage1〜3 は全段不成立（本質的機会費用仮説を支持）
+- **新規（2026-07-25、GPU 不要で並行実施）**: 「壊れにくい自己学習 PPO」の設計整理。
+  壊れにくさを4層に分解した結果、anchor 系列が L2（参照点）/ L3（相手分布）をカバーする一方
+  **L1（最適化衛生）と L4（運用・早期検知）が設計・実装ともに空白**であることが確定。
+  L1 は既存 8 run の横断実測で3つの構造的事実を得た（下記）。設計ノートは
+  `robust_selfplay_ppo_design.md`（DRAFT）、実装はバックログ12（0b / Arm K 判定後）
 - **実装エージェント**: Cursor Composer / Claude Code
   （いずれもローカル WSL の GPU・conda 環境・tmux に直接アクセス可）
+
+### 新規: L1（最適化衛生）の横断診断結果（2026-07-25・判定非関与）
+
+正は `freeparlor/docs/reports/ppo_optimization_health_20260725.md`。
+**8 run 全てに共通する構造的事実**（anchor_c 固有ではない）:
+
+1. **`minibatch_size = 512` は全 run・全バッチで一度も効いていない**（batch median 168–179、
+   512 超 0.00%）。1 optimizer step = 1 半荘の full-batch × 4 epochs。
+   `collate_trajectory_batches` はデッドインポート
+2. **バッチ到着時点（epoch 1）で既に clip_fraction ≈ 0.20–0.33**。陽性対照
+   `trainer_step=0`（client と trainer が同一パラメータ）では clip = 0.0000。
+   定常 staleness は lag 1–2 = **50–100 optimizer step**（`submit_every=50`）
+3. **4 epochs は trust region 占有をほぼ動かさない**（epoch1→epoch4 の差 −0.0008〜−0.0032）
+   → clip は「この更新の行き過ぎを抑える」機能を果たしておらず、
+   **収集経験の約2割が恒常的に勾配に寄与していない**
+
+**因果は未検証**（L1 が基礎劣化の原因である証拠はない）。効くのは**判定の解釈**の側で、
+「C も K も効かなかった」場合に L1 由来の可能性を排除できないという留保が付く。
+**L1 を直すのは C/K 判定後**（凍結を壊さない・過去 run と比較不能になるため）。
+なお副産物として `stage1_20260705_053301` の step 10000–10239 に
+`lag < 0`（版採番の不整合・resume 境界）が 240/11990 バッチ見つかったが、
+Stage1 判定に用いた run ではなく他 7 run では 0 件
 
 ### 進行中: anchor Arm C 本走（2026-07-25 17:03:10 JST 発進・凍結中）
 
@@ -193,11 +220,18 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
 0. **DRCA プローブ（診断、事前登録済み）**: 本測定は §5a-1c で**打ち切り・中断**
    （上記「現在の状態」節）。残枠 a_s3final の残り / a_s3mid / b_s3final は未測定。
    再開可否は anchor 系列の帰結と併せて改めて裁定する
-0b. **探索ラダー閉幕後の方針設計セッション**（設計監督側）: 立直マキシマリズムの商用採否 /
-   経済定数変更（新実験系）/ 敵対的搾取者訓練の要否を裁定。事前フレームは
-   `freeparlor/docs/ops/policy_session_0b_frame.md`（DRAFT・裁定非関与）、設計ギャップの
-   技術検討は `freeparlor/docs/design/product_gaps_design_notes.md`（DRAFT）。
-   残り: **商品性要件の Gamba ヒアリング** → セッション実施
+0b. **探索ラダー閉幕後の方針設計セッション**（設計監督側）: 議題は **4+1** —
+   ①立直マキシマリズムの商用採否 / ②経済定数変更（新実験系）/ ③敵対的搾取者訓練の要否 /
+   ④（付随）Stage2b / **⑤ライセンス・データ権利の分界（2026-07-25 追加）** を裁定。
+   事前フレームは `freeparlor/docs/ops/policy_session_0b_frame.md`（DRAFT・裁定非関与）、
+   設計ギャップの技術検討は `freeparlor/docs/design/product_gaps_design_notes.md`（DRAFT）。
+   商品性要件のヒアリングは **2026-07-24 に完了**（同書 §5）。
+   **議題5 の要点**: anchor 系列は牌譜由来 init（天鳳2009 = 商用不可、Mortal 本体は AGPL）を
+   **学習ループに常駐させる**介入であり、「牌譜依存を減らす」方向と論理的に衝突する。
+   「anchor は研究計測器か製品アーキテクチャの一部か」「アンカーを牌譜非依存な参照点に
+   置換できることを設計要件にするか」を裁定する枠（材料は同書 §6、技術候補は
+   `robust_selfplay_ppo_design.md` §5a）。診断 §6 B（天鳳 BC/蒸留の再導入）も同枠。
+   残り: **セッション実施**（anchor C/K 判定後）
 3. **Stage2b（解凍実験）の再評価**: 配備税の発見により「収束済み方策の分布シフト適応」の
    商用価値が上がった。実施判断は 0b と併せて検討
 4. **launcher Cleanup 修正の run-validation**（実装・logic 検証は 2026-07-25 bc80aff で完了）:
@@ -208,7 +242,9 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
    Arm C 発進まで消化済み。残り: **C 完走（step16000）→ C の eval バッテリー**
    （argmax 6ckpt + 1v3 n=800 + ミラー較正脚 + メタ対決）**→ レンズ4 定性レビュー**
    （`qualitative_review_protocol.md`、判定より前）**→ C 判定 → K の発進 preflight**
-   （verify 全20本 + 400-step 配管スモーク）**→ K 発進 → K 判定 → 0b 接続**
+   （verify 全20本 + 400-step 配管スモーク + バックログ4 + バックログ11）
+   **→ K 発進 → K 判定 → 0b 接続**。
+   判定の解釈時に L1 交絡の留保を添える（`ppo_optimization_health_20260725.md` §5）
 10. **DRCA の山運ノイズ処理（DRCA-v2 候補・着手時期未定）**:
    **Gamba 裁定（2026-07-25）**: 現行 `drca_probe_design.md` の「鳴きによるツモ順の乖離は
    ノイズではなく鳴きの帰結の一部であり、ペア差分に正しく含まれる」は**言い過ぎ**。山は伏せ
@@ -228,6 +264,31 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
      集計値は無傷（山運は N=485 の分岐点間で平均消えする）。壊れているのは**ケース単位の解釈**
    - **着手条件**: DRCA を再開し、かつケース単位の問い（取りこぼし仮説＝選択的な鳴きの価値）を
      立てるとき。anchor 系列の帰結が出るまで保留
+11. **run 中監視の穴埋め（defect・Arm K 発進 preflight で消化）**:
+   **現状の defect**（2026-07-25 実測）: 本書「監視期待値」の第1項
+   `trajectory step count mismatch` は**この文字列を出力するコードが repo に存在しない**
+   （`freeparlor/scripts/` と docs にのみ存在。P2 期の修正で emitter が消えたと推測）ため、
+   **構造的に常に 0** = 実質デッド。一方、実際のデータ落ちシグナル
+   （`mortal/client.py:108` `'trajectory game key missing, skipping game'` = **その局を丸ごと捨てる**、
+   `mortal/client.py:184` `'trajectory orphan steps'`）は
+   **run 中の監視 grep（`run_ppo_p3_stage1_inner.sh:250-259`）が見ていない**。
+   発進前検定（`verify_ppo_p1.py:695-711`）は3種とも 0 を assert しているので、
+   守られていないのは run 中の継続監視だけ。
+   **対応**: inner.sh の監視に2項目を追加（FATAL/NOTICE の区分は実施時に裁定）+
+   死んだ mismatch の扱いを決定（emitter 復活か監視項目から降格か）+
+   **本書「監視期待値」節の記述も同一 commit で実装に合わせる**（片側だけ直すと乖離が
+   別方向にずれる）。バックログ4 と同じ Arm K 発進 preflight で消化する
+12. **壊れにくい自己学習 PPO の実装（0b / Arm K 判定後・別ブランチ・1変数ずつ）**:
+   設計ノートは `freeparlor/docs/design/robust_selfplay_ppo_design.md`（DRAFT・裁定非関与）。
+   壊れにくさを4層に分解し、anchor 系列が L2（参照点）/ L3（相手分布）をカバーする一方
+   **L1（最適化衛生）と L4（運用・早期検知）が空白**であることを確定した。
+   L1 の一次証拠は `freeparlor/docs/reports/ppo_optimization_health_20260725.md`。
+   実装候補は L1: O1（`submit_every` 引き下げ）→ O3（`ppo_epochs=1` の対照）→
+   O2（複数半荘の batch 束ね。**判定窓を step ではなく消費半荘数で定義し直す必要あり**）、
+   L2: D2（param group 分離）→ D3（残差方策 `logits = ref_logits + Δ(s)`。**Arm K の
+   ref forward 配線を再利用できるので K の後なら配線のみ**）、L4: 訓練 rollout からの
+   基礎指標トリップワイヤ（**観測のみ・自動停止なし**）。
+   **凍結中の run（Arm C / Arm K）には一切入れない**
 
 ## 役割分担
 

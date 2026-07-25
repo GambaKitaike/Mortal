@@ -1,14 +1,15 @@
 # freeparlor/docs/ 索引
 
 初版: 2026-07-10（design / reports / ops / archive/dqn への再編時）。
-**最終更新: 2026-07-25**（anchor 系列・DRCA・基礎劣化診断の追加、ステータス再判定）。
+**最終更新: 2026-07-25**（anchor 系列・DRCA・基礎劣化診断の追加、ステータス再判定、
+L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノートの追加）。
 日付は文書本文が名乗る日付（= 内容の基準日）。ステータスは判断根拠が明確なもののみ厳密で、
 曖昧なものは本文参照を推奨。
 
 - **active** = 現在も参照される生きた文書 / **frozen** = 事前登録により変更禁止（run 進行中）
 - **closed** = 役目を終えた（判定完了・タスク消化済み） / **DRAFT** = 未凍結・裁定前
 
-## design/ — 設計・pre-registration（8本）
+## design/ — 設計・pre-registration（9本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
@@ -19,9 +20,10 @@
 | `design/stage3_design.md` | 2026-07-11 | closed | Stage3（anneal付きper-decision鳴きボーナス）の設計・事前登録済み判定条件。判定完了（2026-07-13、分岐2成立 → `reports/ppo_p3_stage3_result.md`）。発進ゲートは v1→v2 amendment 済み（§3）。 |
 | `design/stage2_design.md` | 2026-07-06 | closed | Stage2（配牌rejection samplingによる赤濃縮）の設計・事前登録済み判定条件。判定完了（2026-07-11、分岐2成立 → `reports/ppo_p3_stage2_result.md`）。 |
 | `design/product_gaps_design_notes.md` | 2026-07-24 | DRAFT | 商品化設計ギャップ G1–G3 の技術検討メモ（`ops/policy_session_0b_frame.md` §5.3 の材料）。裁定非関与・実装未承認。 |
+| `design/robust_selfplay_ppo_design.md` | 2026-07-25 | DRAFT | 「壊れにくい自己学習PPO」の設計ノート。壊れにくさを4層（L1最適化衛生 / L2参照点 / L3相手分布 / L4運用）に分解し、anchor系列がL2/L3をカバーする一方 **L1とL4が空白**であることを確定。L1の一次証拠は `reports/ppo_optimization_health_20260725.md`。L2「差分だけ学習」の案D1–D4（推奨D3=残差方策、ArmK の ref配線を再利用）、L4 トリップワイヤ、§5 アンカー置換可能性（0b議題5）。**裁定非関与・実装未承認・判定条件は書かない**。 |
 | `design/reward_audit_teacherfree.md` | 2026-07-01 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
 
-## reports/ — 判定結果・run記録・診断（13本）
+## reports/ — 判定結果・run記録・診断（14本）
 
 > **移動時の制約（2026-07-25 追記）:** `ppo_p1_verify_log.txt` は `verify_ppo_p1.py` が
 > 出力先をハードコードしているため移動不可。`fundamentals_degradation_diagnosis_20260725.md` と
@@ -35,6 +37,7 @@
 |---|---|---|---|
 | `reports/fundamentals_degradation_diagnosis_20260725.md` | 2026-07-25 | active | 「PPOが与えられた基礎（牌理・降り）を壊している」の診断。anchor系列の動機。 |
 | `reports/fundamentals_significance_pass_20260725.md` | 2026-07-25 | active | 上記 §3(a) への半荘クラスタSE付与。放銃劣化は全stage有意（z +3.9〜+4.4）、和了劣化も有意（−2.1〜−3.6）、avg_rank悪化が有意なのはStage2のみ。 |
+| `reports/ppo_optimization_health_20260725.md` | 2026-07-25 | active | **判定非関与の診断**。診断 §4 が仮説に挙げていないL1層（最適化衛生）の横断実測（8 run）。`minibatch_size=512` は全run全バッチで不発（1 optimizer step = 1半荘の full-batch、median 168–179）/ バッチ到着時点で既に clip_fraction ≈0.20–0.33（陽性対照 step0 は 0.0000、定常staleness は 50–100 step）/ 4 epochs が trust region をほぼ動かさない（e1→e4 = −0.0008〜−0.0032）。因果は主張しない。 |
 
 ### DRCA プローブ
 
@@ -83,7 +86,7 @@
 | `ops/qualitative_review_protocol.md` | 2026-07-25 | active | **定性レビュー（レンズ4）の実施プロトコル**。run 完走 → eval バッテリー → **レンズ4 → 判定**の順を規定。判定非関与だが、所見を定量指標に突き合わせ乖離があれば診断タスクを起票することを必須化（07-16 の所見が 07-25 の診断まで9日遅れた事故の再発防止）。 |
 | `ops/project_history.md` | 2026-07-25 | active（履歴） | **CLAUDE.md「現在の状態」節から移設した時系列経緯**（2026-07-06 Stage1判定 〜 2026-07-25 anchor Arm C 発進）+ バックログ原文。不改変保全・追記のみ。 |
 | `ops/run_artifact_retention.md` | 2026-07-16 | active | run成果物の保持・清掃運用（成果物クラス別ポリシー・イベント駆動トリガ・許可リスト方式の削除手順）。2026-07-09 ディスク枯渇インシデントの再発防止。 |
-| `ops/policy_session_0b_frame.md` | 2026-07-16 | DRAFT | 探索ラダー閉幕後の方針設計セッション（バックログ0b）の事前フレーム。議題×DRCA帰結の分岐シナリオと不足材料リスト。裁定非関与。 |
+| `ops/policy_session_0b_frame.md` | 2026-07-16（07-24 §5 / 07-25 §6 追記） | DRAFT | 探索ラダー閉幕後の方針設計セッション（バックログ0b）の事前フレーム。議題×DRCA帰結の分岐シナリオと不足材料リスト。裁定非関与。**議題は 4+1 に拡張（2026-07-25、§6 = 議題5 ライセンス・データ権利の分界。牌譜由来 init への依存を製品にどう持ち込むか + 診断 §6 B の前提変更）**。 |
 | `ops/next_steps_2.md` | 2026-06-29 | active（歴史） | プロジェクト全体史・引き継ぎメモ（最終目標・初期の現状まとめ）。 |
 | `ops/anchor_impl_task_20260725.md` | 2026-07-25 | closed | anchor系列 Arm C/K の実装タスクプロンプト（実装エージェント宛）。実装完了により消化。 |
 | `ops/anchor_impl_rework_20260725.md` | 2026-07-25 | closed | Arm K 差し戻しプロンプト（NaN勾配・検定(20)強化・§5-a1ゲート改修・pool_draw競合）。修正完了により消化。 |
