@@ -703,7 +703,16 @@ Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）�
    bash -n + 制御フロー隔離replica で検証、end-to-end は次回実訓練発進 preflight
    に持ち越し（ラダー閉幕中で直近予定なし）。レガシー P2 系と p3_orchestrator の
    インライン複製はスコープ外（将来の共通化候補）
-5. メタ系ハーネス（レンズ3 等）へのミラー較正脚追加
+5. ~~メタ系ハーネス（レンズ3 等）へのミラー較正脚追加~~ **実装済み・GPU非依存検証済み
+   （2026-07-25、4d16538、較正 RUN は次回 GPU 空き時に持ち越し）**: レンズ3（メタ対決）
+   の「理論ミラー値（素点 -5 / 順位点 0 / チップ 0）からの逸脱」解釈のゼロ点を
+   ハーネス実測で裏取りする較正脚。(1) `analyze_freeparlor_pnl_1v3.py` に理論ミラー定数
+   （既存スコア定数から導出）+ `--mirror-calibration`/`--k-se`/`--strict`（各ストリーム
+   平均を理論値と SE 単位で比較、|z|<=k_se で PASS）、(2) 新規 `run_eval_meta_mirror.sh`
+   （同一 checkpoint を両席に置く X vs 3X を走らせ較正モードへ流す、GPU 単一系統ガード付き、
+   既定 reference=Stage1 step16000）。calibration_lines を決定論的合成データで PASS/FAIL
+   両経路検証、runner の GPU ガードが DRCA プロセス検出で exit 1 を実演。既存メタハーネス
+   本体は無変更。実際の較正 RUN は GPU 占有中につき DRCA 完走後
 6. ~~verify 冒頭への .so 鮮度チェック追加~~ **実装済み・GPU非依存検証済み（2026-07-25、
    6064b0b）**: `verify_ppo_p1.py` main() の torch.load 前に
    `check_libriichi_freshness()` プリフライトゲート（18検定に非算入）。libriichi/src の
