@@ -79,7 +79,7 @@ preflight（残党チェック・libriichi rebuild・検定全 PASS・ディス�
 | `run_eval_meta_mirror.sh` | ミラー較正脚（X vs 3X で理論ミラー値からのゼロ点を実測。実 RUN は未実施） |
 | `run_eval_ppo_control.sh` / `run_eval_ppo_smoke_sanity.sh` / `run_ppo_p3_eval_checkpoint.sh` | 個別 eval 実行 |
 | `analyze_freeparlor_pnl_1v3.py` | 1v3 の素点/順位点/チップ 3ストリーム収支集計（`--mirror-calibration` 内蔵） |
-| `analyze_fundamentals_1v3.py` | 基礎技能（和了率・放銃率・副露率等）の半荘クラスタ SE 付き比較 |
+| `analyze_fundamentals_1v3.py` | 1v3 の基礎指標を **init 基準の差分 + 半荘クラスタ SE + z** で比較。基本表（agari/houjuu/avg_rank、**判定が読む表**・計算経路は凍結）+ 拡張表（fuuro/riichi/ryukyoku/平均和了打点/平均放銃打点/順位分布/順位点/素点/チップ per 局）。打点・順位分布は libriichi `Stat.from_log` をログ単位で呼び、件数の一致を毎半荘 assert（2実装の突き合わせ）。`--basic-only` で拡張を無効化 |
 
 ## drca/ — DRCA プローブ（6本）
 
