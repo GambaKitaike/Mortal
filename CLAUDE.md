@@ -682,6 +682,24 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
   `fundamentals_degradation_diagnosis_20260725.md` + 第2枠 a_init 結果を受け、
   進行中の DRCA 第3枠は継続しつつ、GPU 非依存の PPO 改造準備（アンカー付き PPO の
   設計文書ドラフト等）を先行させる方針
+- **anchor 系列（アンカー付き PPO）設計書 DRAFT 起草**（2026-07-25、docs-only・
+  未凍結・未発進）: `freeparlor/docs/design/anchored_ppo_design.md`。単一変数 2 arm —
+  **C**（opponent pool へ凍結 init を anchor_prob=0.25 で常駐、損失不変）と
+  **K**（`ppo_loss` に凍結 init への masked full KL 項 kl_beta を追加、pool 不変、
+  anneal なし = 恒久レギュラライザ）。両方デフォルト 0/OFF = 既存経路ビット不変の
+  設計。検定 (19)(20) 案・機械ゲートのみの発進ゲート（v2 教訓準拠）・判定条件候補
+  （基礎維持 z<2 + チップ獲得 ≥1SE、n=800 半荘へ倍増提案）を §9 凍結チェックリストと
+  ともに記載。**採否・パラメータ・判定条件の凍結は Gamba/監督裁定待ち**（凍結 commit =
+  事前登録）。実装・発進は凍結後の別タスク
+- **基礎劣化の有意性パス完了**（2026-07-25、CPU のみ・read-only・新規スクリプト1本）:
+  `analyze_fundamentals_1v3.py` + `fundamentals_significance_pass_20260725.md`。
+  診断 §3(a) に半荘クラスタ SE を付与 — **放銃劣化は全 stage 有意（z +3.9〜+4.4）、
+  和了劣化も全 stage 有意（−2.1〜−3.6）、avg_rank 悪化が有意なのは Stage2 のみ**
+  （Stage1/3 は n.s. — 診断の「着順も届かない」は方向記述に降格、正確な像は
+  「基礎を有意に支払いチップで相殺してほぼ損益分岐」）。パーサは commit 済み
+  Stat 値と完全一致で検証、init 脚の stage2/3 間決定論一致（diff 全項目 0.000）も実証。
+  **発見: stage1 の init 脚牌譜が消失**（空 dir。決定論的同一測定が stage2/3 に
+  2部現存するため実害なし、詳細は同レポート §3）
 
 ## 残タスク（バックログ、2026-07-16 時点）
 
