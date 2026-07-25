@@ -1,48 +1,87 @@
 # freeparlor/docs/ 索引
 
-生成日: 2026-07-10。フォルダ再編（design / reports / ops / archive/dqn）に伴う索引。
-ステータスは判断根拠が明確なもののみ厳密。曖昧なものは本文参照を推奨。
+初版: 2026-07-10（design / reports / ops / archive/dqn への再編時）。
+**最終更新: 2026-07-25**（anchor 系列・DRCA・基礎劣化診断の追加、ステータス再判定）。
+日付は文書本文が名乗る日付（= 内容の基準日）。ステータスは判断根拠が明確なもののみ厳密で、
+曖昧なものは本文参照を推奨。
 
-## design/ — 設計・pre-registration（5本）
+- **active** = 現在も参照される生きた文書 / **frozen** = 事前登録により変更禁止（run 進行中）
+- **closed** = 役目を終えた（判定完了・タスク消化済み） / **DRAFT** = 未凍結・裁定前
+
+## design/ — 設計・pre-registration（8本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
-| `design/ppo_migration_design.md` | 2026-07-04 | active | PPO移行の設計正典。教師データ非依存本線の実装設計（critic scale・希少性探索の分岐を含む）。 |
-| `design/stage2_design.md` | 2026-07-09 | closed | Stage2（配牌rejection samplingによる赤濃縮）の設計・事前登録済み判定条件。判定完了（2026-07-11、分岐2成立 → `reports/ppo_p3_stage2_result.md`）。 |
-| `design/stage3_design.md` | 2026-07-11 | active | Stage3（anneal付きper-decision鳴きボーナス）の設計・事前登録済み判定条件。実装・発進は未着手。 |
-| `design/reward_design_teacherfree.md` | 2026-07-02 | active | 教師データ非依存の報酬設計（あ）確定版。reward_audit を受けた本線設計。 |
-| `design/reward_audit_teacherfree.md` | 2026-07-02 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
+| `design/anchored_ppo_design.md` | 2026-07-25 | **frozen（進行中）** | **現行軸**。アンカー付きPPO（基礎劣化対策）の単一変数2 arm — C（opponent pool へ凍結init を anchor_prob=0.25 で常駐）/ K（`ppo_loss` に masked full KL、kl_beta=0.1）。凍結commit 847dc8d が事前登録。判定条件は §6、K の再走規定は §6a、発進ゲートは §5-a1 amendment 済み。 |
+| `design/ppo_migration_design.md` | 2026-07-02 | active | PPO移行の設計正典。教師データ非依存本線の実装設計（critic scale・希少性探索の分岐を含む）。 |
+| `design/reward_design_teacherfree.md` | 2026-07-01 | active | 教師データ非依存の報酬設計（あ）確定版。reward_audit を受けた本線設計。 |
+| `design/drca_probe_design.md` | 2026-07-12 DRAFT → 07-13 凍結 | frozen（測定は打ち切り） | DRCAプローブ（duplicate rollout による鳴き反実仮想アドバンテージの直接測定）の設計・解釈条件。§5a が事前登録、§5a-1a 規模確定（K=8/N=485）、§5a-1b 48h条項（実効5枠へ削減）、**§5a-1c 打ち切り裁定（2026-07-25、第3枠中断・残枠未測定・主contrast2は評価不能）**。 |
+| `design/stage3_design.md` | 2026-07-11 | closed | Stage3（anneal付きper-decision鳴きボーナス）の設計・事前登録済み判定条件。判定完了（2026-07-13、分岐2成立 → `reports/ppo_p3_stage3_result.md`）。発進ゲートは v1→v2 amendment 済み（§3）。 |
+| `design/stage2_design.md` | 2026-07-06 | closed | Stage2（配牌rejection samplingによる赤濃縮）の設計・事前登録済み判定条件。判定完了（2026-07-11、分岐2成立 → `reports/ppo_p3_stage2_result.md`）。 |
+| `design/product_gaps_design_notes.md` | 2026-07-24 | DRAFT | 商品化設計ギャップ G1–G3 の技術検討メモ（`ops/policy_session_0b_frame.md` §5.3 の材料）。裁定非関与・実装未承認。 |
+| `design/reward_audit_teacherfree.md` | 2026-07-01 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
 
-## reports/ — PPO時代の確定レポート・run記録（10本）
+## reports/ — 判定結果・run記録・診断（18本）
+
+### 現行軸（基礎劣化 → anchor 系列）
+
+| パス | 日付 | ステータス | 要約 |
+|---|---|---|---|
+| `reports/fundamentals_degradation_diagnosis_20260725.md` | 2026-07-25 | active | 「PPOが与えられた基礎（牌理・降り）を壊している」の診断。anchor系列の動機。 |
+| `reports/fundamentals_significance_pass_20260725.md` | 2026-07-25 | active | 上記 §3(a) への半荘クラスタSE付与。放銃劣化は全stage有意（z +3.9〜+4.4）、和了劣化も有意（−2.1〜−3.6）、avg_rank悪化が有意なのはStage2のみ。 |
+
+### DRCA プローブ
+
+| パス | 日付 | ステータス | 要約 |
+|---|---|---|---|
+| `reports/drca_frame2_a_init_aggregate_20260725.md` | 2026-07-25 | closed | 第2枠（セット(a)×init）単枠集計: ΔQ̄=−2.1353 / SE 0.4788 / 4.46SE。集計キー衝突（champion slot間の3-tuple併合）の特定と4-tuple化修正、第1枠回帰確認を含む。 |
+| `reports/qualitative_expert_review_drca_frame1_20260722.md` | 2026-07-22 | exploratory | 第1枠 ΔQ̂ 極値24件のGamba全件目視評価 + 監督側訂正§4（裾支配・主判定の推定対象は「無差別な鳴きの平均」・同一山ゆえ結果論はK=8で消えない）。 |
+| `reports/drca_pilot_qualitative_notes.md` | 2026-07-16 | exploratory | パイロット50分岐点の定性ドリルダウン（負の極値=手壊しコスト型 / 正の極値=好機・防御的速度鳴き）+ 牌譜HTMLビューア生成。判定非関与。 |
+
+### 探索ラダー（Stage1〜3、閉幕）
+
+| パス | 日付 | ステータス | 要約 |
+|---|---|---|---|
+| `reports/ppo_p3_stage1_result.md` | 2026-07-06 | closed | Stage1判定結果（立直マキシマリズム、事前固定条件成立→Stage2移行確定）。§6 argmax evalバッテリー・§7 grp_baseline 1v3 を含む。 |
+| `reports/ppo_p3_stage2_result.md` | 2026-07-10（判定 07-11） | closed | Stage2 evalバッテリー+判定結果（分岐2成立、機会費用仮説支持・**配備税**の発見 §7c → Stage3解封）。 |
+| `reports/ppo_p3_stage3_result.md` | 2026-07-13 | closed | Stage3 evalバッテリー+判定結果（分岐2成立、slope/SE=−21で減衰。正典反鳴き勾配の再現性 §7a・anneal内蔵で配備税ゼロ §7c → **探索ラダー閉幕** §9）。 |
+| `reports/ppo_p3_stage1.md` | 2026-07-04 | closed | Stage1本走のrun状態・インシデント史。 |
+| `reports/ppo_p3_pause_resume.md` | 2026-07-05 | closed | run #7のpause/resume記録。 |
+| `reports/qualitative_expert_review_20260715.md` | 2026-07-15 | exploratory | Stage1-16000 argmax自己対戦の専門家（Gamba）定性レビュー。本プロジェクト初の「絶対的な強さ」評価。 |
+| `reports/qualitative_expert_review_stage3_20260716.md` | 2026-07-16 | exploratory | Stage3-16000 argmax の定性レビュー（鳴きレパートリー増だが鳴き後が未熟・カン判断異常・降りの規律崩壊）。上記の対。 |
+
+### PPO 配管期（P1/P2、完結）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
 | `reports/ppo_p1_plumbing.md` | 2026-07-02 | closed | PPO P1配管の実装サマリ。 |
-| `reports/ppo_p1_verify_log.txt` | 2026-07-09 | closed | PPO P1 sanity verification の生ログ（`verify_ppo_p1.py` 出力）。 |
+| `reports/ppo_p1_verify_log.txt` | 随時更新 | 生成物 | `verify_ppo_p1.py` の最新実行ログ（発進preflightのたびに上書きされる）。 |
 | `reports/ppo_p2_smoke.md` | 2026-07-02 | closed | PPO P2スモーク結果（OOM対策後更新）。 |
-| `reports/ppo_p2_diag.md` | 2026-07-03 | closed | PPO P2 OOM対策後の診断再走結果。 |
+| `reports/ppo_p2_diag.md` | 2026-07-02 | closed | PPO P2 OOM対策後の診断再走結果。 |
 | `reports/ppo_p2b_lr_probe.md` | 2026-07-03 | closed | PPO P2b lrプローブ（fuuro崩壊のlr要因検証）。 |
 | `reports/ppo_p2c_advantage_decomp.md` | 2026-07-03 | closed | PPO P2c 宣言行動（鳴き・立直）のadvantage分解計装。 |
-| `reports/ppo_p3_pause_resume.md` | 2026-07-06 | closed | PPO P3 run #7のpause/resume記録。 |
-| `reports/ppo_p3_stage1.md` | 2026-07-07 | closed | PPO P3 Stage1本走のrun状態・インシデント史。 |
-| `reports/ppo_p3_stage1_result.md` | 2026-07-08 | closed | PPO P3 Stage1判定結果（立直マキシマリズム、事前固定条件成立→Stage2移行確定）。 |
-| `reports/ppo_p3_stage2_result.md` | 2026-07-11 | closed | PPO P3 Stage2 evalバッテリー+判定結果（分岐2成立、機会費用仮説支持・配備税7c発見→Stage3解封）。 |
 
-## ops/ — 運用文書（4本）
+## ops/ — 運用文書（9本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
-| `ops/supervisor_handbook.md` | 2026-07-10 | active | 設計監督Claude向け引き継ぎハンドブック（出力規約・確定知見・殺した仮説リスト §4）。 |
-| `ops/next_steps_2.md` | 2026-07-03 | active | プロジェクト全体史・引き継ぎメモ（最終目標・現状まとめ）。CLAUDE.mdの「最初に読む文書」6番目。 |
-| `ops/prompts_for_20260713.md` | 2026-07-08 | active | 2026-07-13投入用プロンプト集。プロンプト①完了、②③保留中につき「active」（歴史文書として本文は不改変保全の注記あり）。 |
-| `ops/next_steps.md` | 2026-06-24 | closed | 旧引き継ぎメモ（2026-06-23時点）。`next_steps_2.md` に事実上置換済み。 |
+| `ops/supervisor_handbook.md` | 2026-07-10 | active | 設計監督Claude向け引き継ぎハンドブック（出力規約・確定知見・殺した仮説リスト §4）。設計相談セッションの冒頭で必読。 |
+| `ops/project_history.md` | 2026-07-25 | active（履歴） | **CLAUDE.md「現在の状態」節から移設した時系列経緯**（2026-07-06 Stage1判定 〜 2026-07-25 anchor Arm C 発進）+ バックログ原文。不改変保全・追記のみ。 |
+| `ops/run_artifact_retention.md` | 2026-07-16 | active | run成果物の保持・清掃運用（成果物クラス別ポリシー・イベント駆動トリガ・許可リスト方式の削除手順）。2026-07-09 ディスク枯渇インシデントの再発防止。 |
+| `ops/policy_session_0b_frame.md` | 2026-07-16 | DRAFT | 探索ラダー閉幕後の方針設計セッション（バックログ0b）の事前フレーム。議題×DRCA帰結の分岐シナリオと不足材料リスト。裁定非関与。 |
+| `ops/next_steps_2.md` | 2026-06-29 | active（歴史） | プロジェクト全体史・引き継ぎメモ（最終目標・初期の現状まとめ）。 |
+| `ops/anchor_impl_task_20260725.md` | 2026-07-25 | closed | anchor系列 Arm C/K の実装タスクプロンプト（実装エージェント宛）。実装完了により消化。 |
+| `ops/anchor_impl_rework_20260725.md` | 2026-07-25 | closed | Arm K 差し戻しプロンプト（NaN勾配・検定(20)強化・§5-a1ゲート改修・pool_draw競合）。修正完了により消化。 |
+| `ops/prompts_for_20260713.md` | 2026-07-08 | closed | 2026-07-13投入用プロンプト集（①Stage1残タスク ②Stage2実装 ③Stage2発進）。①〜③すべて消化済み。歴史文書として不改変保全。 |
+| `ops/next_steps.md` | 2026-06-23 | closed | 旧引き継ぎメモ。`next_steps_2.md` に事実上置換済み。 |
 
-## archive/dqn/ — オフラインDQN時代の完結文書（35本、全て closed）
+## archive/dqn/ — オフラインDQN時代の完結文書（36本、全て closed）
 
 日付は全て 2026-06-22〜2026-07-02。教師データ由来のオフラインDQN+CQL経路（現行PPO本線への移行前）の調査・診断・phase結果。`main` ブランチのDQN経路にのみ関連し、現行 `ppo-migration` の判断には使わない。
 
 | パス | 日付 | 要約 |
 |---|---|---|
+| `archive/dqn/dqn_era_readme.md` | 2026-06（2026-07-25 移設） | **当時の `freeparlor/README.md`**（Phase1〜4のポートフォリオ向けまとめ）。移設時にアーカイブ注記の追加と相対リンク修正のみ実施、本文は不改変。 |
 | `archive/dqn/phase1_result.md` | 2026-06-23 | Phase1 Result: Reproducible 64×10 Run。 |
 | `archive/dqn/phase1_stats_192x40.md` | 2026-06-23 | Phase1 Playstyle Stats: 192×40 Self-Play。 |
 | `archive/dqn/libriichi_agari_survey.md` | 2026-06-23 | libriichi和了情報調査（チップ報酬β向け）。 |
@@ -81,5 +120,7 @@
 
 ## 分類上の注記
 
-- 分類はユーザー提示の分類表（design 4本 / reports 9本 / ops 4本、明示列挙）に従った。archive/dqn は各カテゴリに明示列挙されなかった残り全部というルールで機械的に確定。
-- 提示された本数目安（archive/dqn 37本、configs/archive 27本）と実カウント（35本・25本）に差異あり。ヘッダ確認は本索引作成時に全ファイル実施済みで、実カウント側が正。
+- 初版（2026-07-10）の分類はユーザー提示の分類表（design 4本 / reports 9本 / ops 4本、明示列挙）に従い、archive/dqn は各カテゴリに明示列挙されなかった残り全部というルールで機械的に確定した。以後の追加分は同じ基準で振り分けている。
+- 本数は実カウントが正（2026-07-25 時点: design 8 / reports 18 / ops 9 / archive/dqn 36、`configs/archive` 25）。
+- reports/ の小見出し（現行軸 / DRCA / 探索ラダー / 配管期）は読者の導線のための便宜的な区分で、ディレクトリ構造は分けていない。
+- 更新規律: 文書を追加・ステータス変更したら本索引も同一 commit で更新する。

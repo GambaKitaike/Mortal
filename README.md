@@ -22,6 +22,8 @@
 MSE 損失がチップ由来の外れ値に支配される最適化アーチファクトであり、Huber損失
 （δ=15）で解消することを確認。これを受け、**教師データ（CQL）を完全放棄し、
 on-policy PPO 自己対戦に全面移行**した（`freeparlor/docs/design/ppo_migration_design.md`）。
+初期フェーズ（Phase1〜4）の記録は `freeparlor/docs/archive/dqn/`（当時の README は
+同ディレクトリの `dqn_era_readme.md`）に保全してある。
 
 - **報酬**: `reward = α·(素点Δ/1000) + γ·(GRP順位価値Δ) + β·(チップ枚数Δ × 5.0)`、
   α=γ=β=1（1チップ=5000点の実ルールに一致する真の経済定数）。チップ専用Qヘッドは廃止し、
@@ -58,19 +60,56 @@ on-policy PPO 自己対戦に全面移行**した（`freeparlor/docs/design/ppo_
 
 ---
 
-## 現在進行中: DRCA プローブ（反実仮想アドバンテージの直接測定）
+## 診断: DRCA プローブ（反実仮想アドバンテージの直接測定）— 一部完了・中断
 
 探索ラダー閉幕を受け、診断計測器として **DRCA（duplicate rollout counterfactual
-advantage）プローブ**を設計・実装・実行中（`freeparlor/docs/design/
+advantage）プローブ**を設計・実装・測定した（`freeparlor/docs/design/
 drca_probe_design.md`）。訓練への介入ではなく、同一seedの局面を「鳴く」腕と
 「鳴かない」腕にfork-by-replayで分岐させ、Q(s,鳴く)−Q(s,鳴かない) を duplicate
 rollout で直接測定する。目的は、Stage1-3の結果が (i) 内在的機会費用、
 (ii) credit-assignment失敗、(iii) 競技力不足、(iv) 報酬設計そのものの符号ミス
 のどれに起因するかを切り分けること。
 
-2026-07-15時点、パイロット測定（50分岐点）は完了・監督側検証合格。規模確定
-（K=8 / N=485）済みで、本測定第1枠（セット(a) × Stage1-16000 checkpoint）を
-並走中。最新の進捗は `CLAUDE.md`「現在の状態」節を参照。
+事前登録した実効5枠のうち **2枠を完了**（各 N=485 分岐点 / K=8 rollout、
+cluster-robust SE）:
+
+| 枠 | 対象方策 | ΔQ̄（千点） | cluster SE | \|ΔQ̄\|/SE |
+|---|---|---:|---:|---:|
+| 第1枠 | Stage1-16000（学習済み） | **−3.26** | 0.72 | 4.53 |
+| 第2枠 | init（PPO 未学習・基礎技能は無傷） | **−2.14** | 0.48 | 4.46 |
+
+**赤保持時の鳴きの反実仮想価値は、基礎技能が無傷の init でも有意に負。** つまり
+反鳴き均衡は「PPOが基礎を壊した結果のアーティファクト」ではなく、この経済（β=1・
+立直ペイロード）の性質である、と挟み撃ちで確認できた。ただし分布は裾支配で、主判定の
+推定対象は「無差別な鳴きの平均」であり「選択的な鳴きの価値」ではない
+（`qualitative_expert_review_drca_frame1_20260722.md` §4）。
+
+**残り3枠は未測定**（第3枠は進捗4.6%で中断・成果物は退避済み、a_s3mid / b_s3final は
+未着手）。中核の問いが上記2枠で決着したこと、および優先軸が下記 anchor 系列へ移ったことに
+よる打ち切り裁定（`drca_probe_design.md` §5a-1c）。これに伴い主 contrast 2・contrast 3 は
+評価不能で、設計書 §4 の解釈シナリオ割り当てには到達していない。
+
+---
+
+## 現在進行中: anchor 系列（アンカー付き PPO）— 基礎技能劣化への対策
+
+探索ラダーと並行して、**PPO 自己対戦が Mortal 由来の基礎技能（牌理・降り）を
+有意に劣化させている**ことが判明した（放銃劣化 z = +3.9〜+4.4、和了劣化 −2.1〜−3.6、
+全 stage で有意。`fundamentals_significance_pass_20260725.md`）。チップ獲得でほぼ相殺して
+損益分岐に見えていたが、内訳では基礎を支払っている。定性レビューでも「鳴きの入口は増えたが
+鳴いた後のサブゲームが未熟」「降りの規律が崩壊気味」という像が一致した。
+
+そこで**凍結した init（教師データ由来の基礎技能を持つ方策）をアンカーとして参照させる**
+単一変数アブレーションを設計・凍結し（`freeparlor/docs/design/anchored_ppo_design.md`）、
+実施中:
+
+| Arm | 介入 | 状態 |
+|---|---|---|
+| **C** | opponent pool へ凍結 init を `anchor_prob=0.25` で常駐（損失は不変） | **本走中・凍結**（step 16000 まで） |
+| **K** | `ppo_loss` に凍結 init への masked full KL 項（`kl_beta=0.1`、anneal なし） | 実装・検定完了、**未発進** |
+
+判定条件は事前登録済み（判定窓 step 8000–16000、**基礎維持**: 放銃差 z<2 かつ
+**チップ +方向 ≥1SE**、1v3 両脚 n=800）。最新の進捗は `CLAUDE.md`「現在の状態」節を参照。
 
 ---
 
@@ -123,23 +162,30 @@ run 発進は `runs/` の spawn ランチャ（`freeparlor/scripts/run_ppo_*.sh`
 
 ## 主要な文書
 
+`freeparlor/docs/INDEX.md` が全文書の索引（パス・日付・ステータス・要約）。主要なものは:
+
 - `freeparlor/docs/design/ppo_migration_design.md` — PPO移行の設計正典
 - `freeparlor/docs/design/reward_design_teacherfree.md` — 報酬設計の確定事項
 - `freeparlor/docs/design/stage2_design.md` / `stage3_design.md` — 各Stageの設計・
   事前登録済み判定条件
 - `freeparlor/docs/reports/ppo_p3_stage1_result.md` / `_stage2_result.md` /
   `_stage3_result.md` — 各Stageの判定結果
-- `freeparlor/docs/design/drca_probe_design.md` — 現行DRCAプローブの設計・解釈条件
-- `CLAUDE.md` — プロジェクト全体史・現在の状態・作業規律（最も詳細で最新）
+- `freeparlor/docs/design/drca_probe_design.md` — DRCAプローブの設計・解釈条件・打ち切り裁定
+- `freeparlor/docs/reports/fundamentals_degradation_diagnosis_20260725.md` /
+  `fundamentals_significance_pass_20260725.md` — 基礎技能劣化の診断と有意性
+- `freeparlor/docs/design/anchored_ppo_design.md` — 現行のanchor系列の設計（凍結済み）
+- `freeparlor/docs/ops/project_history.md` — 2026-07-06以降の時系列経緯
+- `CLAUDE.md` — 現在の状態・作業規律（進行中runの正）
 
 ---
 
 ## 今後
 
 ### 本リポジトリ内（調査の継続）
-- DRCA プローブ本測定 → 判定（進行中）
-- 探索ラダー閉幕後の方針設計（立直マキシマリズムの商用採否、経済定数変更、
-  敵対的搾取者訓練の要否など）
+- anchor 系列（進行中）: Arm C 完走 → eval バッテリー → 判定 → Arm K 発進 → 判定
+- 方針設計セッション: 立直マキシマリズムの商用採否、経済定数変更、敵対的搾取者訓練の
+  要否を、上記の帰結と併せて裁定（事前フレーム `freeparlor/docs/ops/policy_session_0b_frame.md`）
+- DRCA 残枠の再開可否（現在は保留・成果物は退避済み）
 
 ### 商用版（別実装・本リポジトリの外）
 商用フリー雀荘AIは、本リポジトリの延長ではなく**ゼロから実装する**予定。理由は2つ：
