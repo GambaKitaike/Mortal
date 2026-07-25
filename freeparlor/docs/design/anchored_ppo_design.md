@@ -128,12 +128,19 @@ total = policy_loss + c_vf·value_loss − c_ent·entropy + kl_beta·KL_ref
 
 ### 5-a1. Arm K ゲートの amendment（2026-07-25、Gamba 裁定・測定開始前）
 
-**改訂理由:** 上記原文の「全バッチ kl_ref_mean > 0」は**成立し得ない**。π_θ は
-init から warm-start され、trainer は policy/ref とも eval モード固定
-（`train_ppo.py:71-72,189`）なので、trainer_step 0 の両者は state_dict が
-ビット同一 → `kl_ref_mean` は厳密に **0.0**（監督側が実 init checkpoint で実測）。
-原文のままでは窓の先頭で必ず落ちる。Stage3 ゲート v1→v2 と同じく、
-測定開始前の明示的 amendment として改訂する。
+**改訂理由:** 上記原文の「全バッチ kl_ref_mean > 0」は、trainer_step 0 では
+**検査として無意味になる**。π_θ は init から warm-start され、trainer は policy/ref
+とも eval モード固定（`train_ppo.py:71-72,189`）なので、step 0 の両者は state_dict が
+ビット同一。監督側の実測（実 init checkpoint、2026-07-25）:
+
+- **CPU**: `kl_ref_mean` は厳密に **0.0** → 原文のままでは窓の先頭で**必ず落ちる**
+- **GPU 実機**: `ref_logits_all` を minibatch 単位でチャンク計算する実装
+  （`train_ppo.py`）に対し `logits_all` は全バッチ一括のため、リダクション順の差で
+  **2.53e-09** 程度の数値ノイズが出る → 原文の `> 0` は**このノイズで「通ってしまう」**
+
+すなわち原文の条件は、環境によって「必ず落ちる」か「ノイズで通る」かのどちらかであり、
+いずれにせよ意図した検査（KL が実際に立ち上がっているか）になっていない。
+Stage3 ゲート v1→v2 と同じく、測定開始前の明示的 amendment として改訂する。
 
 **改訂後の Arm K 機械ゲート**（窓 W = `ppo_diag.jsonl` の `event='kl_anchor'` かつ
 `0 ≤ trainer_step ≤ 200` のレコード。W が空なら FAIL）:
@@ -145,9 +152,10 @@ init から warm-start され、trainer は policy/ref とも eval モード固�
 
 条件3 の意図は「β は効いているが KL が 0 に張り付いたまま」という病態を通さない
 こと（窓を [1,200] へずらすだけの案はこれを検出できないため不採用）。
-`trainer_step 0` の値は**判定に使わず INFO として報告する**（0.0 ちょうどなら
-ref が step0 方策と同一であることの陽性対照。ここを合否条件にすると新たな
-偽陽性経路を増やすため、Stage3 v1 の教訓に従い条件化しない）。
+`trainer_step 0` の値は**判定に使わず INFO として報告する**（0.0〜1e-8 程度の
+オーダーなら ref が step0 方策と同一であることの陽性対照。逆にここが有意な大きさ
+なら ref checkpoint の取り違えを疑う。合否条件にすると上記のとおり環境依存の
+偽陽性・偽陰性を生むため、Stage3 v1 の教訓に従い条件化しない）。
 
 Arm C ゲート・判定条件（§6）・再走規定（§6a）・b/schedule は本 amendment で不変。
 
