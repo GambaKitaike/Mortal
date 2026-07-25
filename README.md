@@ -130,6 +130,8 @@ run 発進は `runs/` の spawn ランチャ（`freeparlor/scripts/run_ppo_*.sh`
 - `freeparlor/docs/reports/ppo_p3_stage1_result.md` / `_stage2_result.md` /
   `_stage3_result.md` — 各Stageの判定結果
 - `freeparlor/docs/design/drca_probe_design.md` — 現行DRCAプローブの設計・解釈条件
+- `freeparlor/docs/design/teacherfree_training_candidates.md` — 教師データ非依存の
+  訓練方式候補（cold start / 均衡脱出の分離。DRAFT・非事前登録。下記「商用版」の土台）
 - `CLAUDE.md` — プロジェクト全体史・現在の状態・作業規律（最も詳細で最新）
 
 ---
