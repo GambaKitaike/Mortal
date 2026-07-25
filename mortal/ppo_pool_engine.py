@@ -93,12 +93,12 @@ class PPOOpponentPoolEngine:
 
     def _ckpt_for_game(self, game_key: str) -> Path | None:
         if game_key not in self._game_ckpt:
-            ckpt = self.pool.sample()
+            ckpt, draw_kind = self.pool.sample()
             self._game_ckpt[game_key] = ckpt
-            self._log_pool_draw(game_key, ckpt)
+            self._log_pool_draw(game_key, ckpt, draw_kind)
         return self._game_ckpt[game_key]
 
-    def _log_pool_draw(self, game_key: str, ckpt: Path | None):
+    def _log_pool_draw(self, game_key: str, ckpt: Path | None, draw_kind: str):
         if not self.draw_log_path:
             return
         import json
@@ -107,7 +107,7 @@ class PPOOpponentPoolEngine:
         record = {
             'event': 'pool_draw',
             'game_key': game_key,
-            'draw_kind': self.pool.last_draw_kind,
+            'draw_kind': draw_kind,
             'checkpoint': str(ckpt) if ckpt is not None else None,
             'timestamp': datetime.now(timezone.utc).isoformat(),
         }
@@ -159,7 +159,8 @@ class PPOOpponentPoolEngine:
             q_proxy = torch.cat(q_parts, dim=0).tolist()
             return actions, q_proxy, masks, is_greedy
 
-        brain, actor_critic = self._get_model(self.pool.sample())
+        ckpt, _draw_kind = self.pool.sample()
+        brain, actor_critic = self._get_model(ckpt)
         obs_t = torch.as_tensor(np.stack(obs, axis=0), device=self.device)
         masks_t = torch.as_tensor(np.stack(masks, axis=0), device=self.device)
         actions, is_greedy, q_proxy = self._forward(brain, actor_critic, obs_t, masks_t)

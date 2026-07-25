@@ -1664,7 +1664,7 @@ def check_anchor_pool(buf: StringIO):
                     fallback_checkpoint=init0,
                     **kwargs,
                 )
-                off_series = [pool_off.sample() for _ in range(50)]
+                off_series = [pool_off.sample()[0] for _ in range(50)]
 
                 random.seed(seed)
                 pool_legacy = OpponentPool(
@@ -1687,8 +1687,9 @@ def check_anchor_pool(buf: StringIO):
             anchor_checkpoint=anchor,
         )
         for _ in range(20):
-            got = pool_on.sample()
+            got, kind = pool_on.sample()
             assert got == anchor, f'anchor_prob=1.0 returned {got} != {anchor}'
+            assert kind == 'anchor', f'anchor_prob=1.0 draw_kind={kind!r} != anchor'
         log(f'  (b) PASS: anchor_prob=1.0 always returns {anchor.name}', buf)
 
         # (c) intermediate anchor_prob: binomial validity (n=2000, p=0.25).
@@ -1701,7 +1702,7 @@ def check_anchor_pool(buf: StringIO):
             anchor_checkpoint=anchor,
         )
         n_trials = 2000
-        n_anchor = sum(1 for _ in range(n_trials) if pool_mid.sample() == anchor)
+        n_anchor = sum(1 for _ in range(n_trials) if pool_mid.sample()[0] == anchor)
         rate = n_anchor / n_trials
         # 99.7% binomial interval ~ [0.19, 0.31] for n=2000, p=0.25.
         assert 0.19 <= rate <= 0.31, (
@@ -1730,7 +1731,9 @@ def check_anchor_pool(buf: StringIO):
 
 def check_kl_anchor(buf: StringIO):
     """(20) KL anchor term (anchored_ppo_design.md §3/§4):
-    (a) OFF bit identity, (b) masked KL hand calc, (c) ref no-grad."""
+    (a) OFF bit identity, (b) independent closed-form KL, (c) ref no-grad + finite train grads."""
+    import math
+
     log('(20) KL anchor loss term', buf)
 
     device = torch.device('cpu')
@@ -1758,6 +1761,16 @@ def check_kl_anchor(buf: StringIO):
                 return False
         return True
 
+    def _assert_finite_train_grads(brain, ac, *, label: str):
+        bad = []
+        for name, p in list(brain.named_parameters()) + list(ac.named_parameters()):
+            if p.requires_grad:
+                if p.grad is None:
+                    bad.append(f'{name}: grad is None')
+                elif not torch.isfinite(p.grad).all():
+                    bad.append(f'{name}: non-finite grad')
+        assert not bad, f'{label}: {bad[:3]}'
+
     # (a) OFF: kl_beta=0.0 must return identical dict (keys + values).
     loss_off_a = ppo_loss(
         logits, values, actions, masks, logp_old, advantages, returns,
@@ -1773,18 +1786,28 @@ def check_kl_anchor(buf: StringIO):
     assert _losses_equal(loss_off_a, loss_off_b), 'OFF dict values differ'
     log('  (a) PASS: kl_beta=0.0 dict keys/values bit-identical (ref_logits ignored)', buf)
 
-    # (b) masked KL hand calculation + ref=pi -> KL=0 + single-legal mask.
-    logits_det = logits.detach()
-    hand_kl = masked_kl_forward(logits_det, ref_logits, masks)
-    probs = masked_softmax(logits_det, masks)
-    logp = masked_log_softmax(logits_det, masks)
-    logp_ref = masked_log_softmax(ref_logits, masks)
-    expected = (probs * (logp - logp_ref)).masked_fill(~masks, 0.0).sum(-1).mean()
-    assert torch.allclose(hand_kl, expected, atol=1e-6, equal_nan=True), (
-        f'hand KL {hand_kl.item()} != {expected.item()}'
+    # (b) independent closed-form KL (2 legal actions, math.log — not implementation helpers).
+    p0, p1 = 0.7, 0.3
+    q0, q1 = 0.5, 0.5
+    expected_kl = (
+        p0 * (math.log(p0) - math.log(q0))
+        + p1 * (math.log(p1) - math.log(q1))
+    )
+    dense_logits = torch.full((1, ACTION_SPACE), -1e9, device=device)
+    dense_ref = torch.full((1, ACTION_SPACE), -1e9, device=device)
+    dense_logits[0, 0] = math.log(p0)
+    dense_logits[0, 1] = math.log(p1)
+    dense_ref[0, 0] = math.log(q0)
+    dense_ref[0, 1] = math.log(q1)
+    dense_mask = torch.zeros(1, ACTION_SPACE, dtype=torch.bool, device=device)
+    dense_mask[0, 0] = True
+    dense_mask[0, 1] = True
+    got_kl = masked_kl_forward(dense_logits, dense_ref, dense_mask)
+    assert abs(got_kl.item() - expected_kl) < 1e-5, (
+        f'closed-form KL {got_kl.item()} != {expected_kl}'
     )
 
-    same_kl = masked_kl_forward(logits_det, logits_det, masks)
+    same_kl = masked_kl_forward(dense_logits, dense_logits, dense_mask)
     assert abs(same_kl.item()) < 1e-5, f'ref=pi KL={same_kl.item()} != 0'
 
     single_mask = torch.zeros(1, ACTION_SPACE, dtype=torch.bool, device=device)
@@ -1793,12 +1816,12 @@ def check_kl_anchor(buf: StringIO):
     single_kl = masked_kl_forward(single_logits, single_logits + 0.5, single_mask)
     assert torch.isfinite(single_kl), 'single-legal mask KL must be finite'
     log(
-        f'  (b) PASS: hand KL match (atol=1e-6), ref=pi KL={same_kl.item():.2e}, '
-        f'single-legal finite',
+        f'  (b) PASS: closed-form KL={got_kl.item():.6f} (expected {expected_kl:.6f}), '
+        f'ref=pi KL={same_kl.item():.2e}, single-legal finite',
         buf,
     )
 
-    # (c) beta>0: ref parameters receive no gradient.
+    # (c) beta>0: ref frozen, all train grads finite (192x40 + sparse mask).
     ref_brain = Brain(version=4, conv_channels=192, num_blocks=40).to(device)
     ref_ac = ActorCritic(version=4, tau=1.0).to(device)
     ref_brain.requires_grad_(False)
@@ -1834,8 +1857,12 @@ def check_kl_anchor(buf: StringIO):
         assert p.grad is None, 'ref_brain param received gradient'
     for p in ref_ac.parameters():
         assert p.grad is None, 'ref_ac param received gradient'
-    assert any(p.grad is not None for p in train_brain.parameters()), 'train_brain got no grad'
-    log('  (c) PASS: kl_beta=0.1 ref frozen (grad None), train params got grad', buf)
+    _assert_finite_train_grads(train_brain, train_ac, label='192x40 sparse mask')
+    log(
+        '  (c) PASS: kl_beta=0.1 ref frozen (grad None), '
+        'all train params have finite grad (192x40 sparse mask)',
+        buf,
+    )
 
     log('  PASS: KL anchor loss term (20)', buf)
 

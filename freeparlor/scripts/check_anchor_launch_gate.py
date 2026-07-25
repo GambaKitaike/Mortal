@@ -15,7 +15,8 @@ Arm C ログ形式 (run_dir/logs/pool_draw_*.jsonl):
 
 Arm K ログ形式 (run_dir/logs/ppo_diag.jsonl):
   event='kl_anchor' レコード。必須キー: kl_beta, kl_ref_mean, kl_term_total。
-  trainer_step in [0, 200] の全バッチで kl_beta=設定値・有限値・NaN/inf なし。
+  §5-a1: 窓 W=[0,200] 全レコードで kl_beta=設定値・kl_ref_mean 有限かつ >=0；
+  後半窓 W₂=[101,200] 全レコードで kl_ref_mean>0。step0 は INFO のみ。
 """
 from __future__ import annotations
 
@@ -96,32 +97,56 @@ def run_arm_k(diag_path: Path, kl_beta: float):
                 recs.append(d)
 
     window = [d for d in recs if 0 <= d['trainer_step'] <= MECH_HI]
-    print(f'\n=== Anchor Arm K 機械ゲート (@step{MECH_HI}) ===')
+    window2 = [d for d in recs if 101 <= d['trainer_step'] <= MECH_HI]
+    step0_recs = [d for d in recs if d['trainer_step'] == 0]
+
+    print(f'\n=== Anchor Arm K 機械ゲート (@step{MECH_HI}, §5-a1) ===')
     print(f'kl_anchor レコード総数: {len(recs)}')
-    print(f'窓 [0, {MECH_HI}] のバッチ数: {len(window)}')
+    print(f'窓 W [0, {MECH_HI}] のバッチ数: {len(window)}')
+    print(f'後半窓 W₂ [101, {MECH_HI}] のバッチ数: {len(window2)}')
+
+    if step0_recs:
+        step0_vals = [d.get('kl_ref_mean') for d in step0_recs]
+        print(f'INFO: trainer_step=0 kl_ref_mean values (not used for pass/fail): {step0_vals}')
 
     if not window:
-        print('FATAL: 窓内 kl_anchor レコード 0 件 -> FAIL')
+        print('FATAL: 窓 W 内 kl_anchor レコード 0 件 -> FAIL')
         sys.exit(1)
 
     beta_values = {d.get('kl_beta') for d in window}
     beta_ok = beta_values == {kl_beta}
-    print(f'kl_beta の値集合: {sorted(beta_values)} (期待 {{{kl_beta}}}) -> '
+    print(f'[1] kl_beta の値集合: {sorted(beta_values)} (期待 {{{kl_beta}}}) -> '
           f"{'OK' if beta_ok else 'NG'}")
 
-    finite_ok = True
+    healthy_ok = True
     for d in window:
         v = d.get('kl_ref_mean')
-        if v is None or not math.isfinite(v) or v <= 0:
-            finite_ok = False
-            print(f'  NG: trainer_step={d.get("trainer_step")} kl_ref_mean={v!r}')
+        if v is None or not math.isfinite(v) or v < 0:
+            healthy_ok = False
+            print(f'  [2] NG: trainer_step={d.get("trainer_step")} kl_ref_mean={v!r}')
             break
-    if finite_ok:
+    if healthy_ok:
         means = [d['kl_ref_mean'] for d in window]
-        print(f'kl_ref_mean: min={min(means):.6f} max={max(means):.6f} '
-              f'mean={sum(means)/len(means):.6f} -> OK (全て有限かつ >0)')
+        print(f'[2] kl_ref_mean: min={min(means):.6f} max={max(means):.6f} '
+              f'mean={sum(means)/len(means):.6f} -> OK (全て有限かつ >=0)')
 
-    mech_pass = beta_ok and finite_ok
+    if not window2:
+        print('[3] FATAL: 後半窓 W₂ 内 kl_anchor レコード 0 件 -> FAIL')
+        sys.exit(1)
+
+    rise_ok = True
+    for d in window2:
+        v = d.get('kl_ref_mean')
+        if v is None or not math.isfinite(v) or v <= 0:
+            rise_ok = False
+            print(f'  [3] NG: trainer_step={d.get("trainer_step")} kl_ref_mean={v!r}')
+            break
+    if rise_ok:
+        w2_means = [d['kl_ref_mean'] for d in window2]
+        print(f'[3] W₂ kl_ref_mean: min={min(w2_means):.6f} max={max(w2_means):.6f} '
+              f'-> OK (全て >0)')
+
+    mech_pass = beta_ok and healthy_ok and rise_ok
     print(f'\n機械ゲート判定: {"通過" if mech_pass else "未達 (run停止・実装調査)"}')
     if not mech_pass:
         sys.exit(1)

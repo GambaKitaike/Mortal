@@ -44,24 +44,24 @@ class OpponentPool:
         cks = [p for p in self.ckpt_dir.glob('step_*.pth') if _STEP_RE.search(p.name)]
         return sorted(cks, key=lambda p: int(_STEP_RE.search(p.name).group(1)))
 
-    def sample(self) -> Path | None:
+    def sample(self) -> tuple[Path | None, str]:
         if self.anchor_prob > 0.0 and random.random() < self.anchor_prob:
             self.last_draw_kind = 'anchor'
-            return self.anchor_checkpoint
+            return self.anchor_checkpoint, 'anchor'
         cks = self.list_checkpoints()
         if not cks:
             self.last_draw_kind = 'fallback'
-            return self.fallback_checkpoint
+            return self.fallback_checkpoint, 'fallback'
         latest = cks[-1]
         if len(cks) == 1 or random.random() < self.latest_prob:
             self.last_draw_kind = 'latest'
-            return latest
+            return latest, 'latest'
         past = cks[-(self.past_k + 1):-1]
         if not past:
             self.last_draw_kind = 'latest'
-            return latest
+            return latest, 'latest'
         self.last_draw_kind = 'past'
-        return random.choice(past)
+        return random.choice(past), 'past'
 
     def load_ppo(self, checkpoint: Path | None, brain, actor_critic, *, map_location='cpu') -> bool:
         if checkpoint is None or not Path(checkpoint).is_file():

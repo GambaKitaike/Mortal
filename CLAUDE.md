@@ -749,6 +749,17 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
   ゲートは不変。差し戻しプロンプト
   `freeparlor/docs/ops/anchor_impl_rework_20260725.md`（§3b にゲート改修を追加）。
   進行中の DRCA 第3枠は検証前後で 3 プロセス稼働・divergence 0 を確認
+- **anchor Arm K 差し戻し修正完了**（2026-07-25、実装・CPU 検証のみ・**未発進**）:
+  `masked_kl_forward` の NaN 勾配修正（`diff.masked_fill` を積の前に適用、前向き値一致）、
+  検定 (20) 強化（閉形式 KL 独立検証 + 192×40 疎 mask で全 train 勾配有限 assert）、
+  `OpponentPool.sample()` が `(path, kind)` を原子返却（pool_draw 競合解消）、
+  `check_anchor_launch_gate.py` Arm K を §5-a1 3条件へ改修。**ローカル WSL CPU 検証**:
+  検定 (19)(20) 2回連続 PASS、修正前後 forward 一致（`0.830569`）、192×40 で
+  grad finite 411/411（修正前は 409/411 非有限）、ゲート合成データ PASS + FAIL 4経路
+  （空窓 / kl_beta 不一致 / NaN / W₂ 張り付き）exit code 実演済み。
+  libriichi・client rollout・報酬3ストリーム・DRCA ハーネス・検定(1)–(18)・Arm C
+  合格済みロジック（§3 競合対応除く）無変更。verify 全20本・400-step スモークは
+  **DRCA 第3枠完走後の発進 preflight** に統合。発進は別タスク
 
 ## 残タスク（バックログ、2026-07-16 時点）
 
@@ -826,13 +837,11 @@ Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）�
    Stage3 判定確定により着手条件充足）**。設計ドラフトは `drca_probe_design.md`
    （2026-07-12 commit）、実装は採取・並走・集計ハーネス3本・学習コード無変更が目標
 9. **anchor 系列（アンカー付き PPO、基礎劣化対策）— 現行の優先軸**:
-   設計凍結済み（2026-07-25、`anchored_ppo_design.md`）。~~実装~~ **一次実装済み
-   → 監督3段検証で Arm C 合格・Arm K 差し戻し（2026-07-25 夜、「現在の状態」節参照）**。
-   残り: (a) **Arm K の NaN 勾配修正 + 検定(20)強化 + ゲート §5-a1 追従 +
-   pool_draw 競合**（実装エージェント、
-   `freeparlor/docs/ops/anchor_impl_rework_20260725.md`、CPU 完結）、
-   ~~(b) 発進ゲートの amendment 裁定~~ **消化済み（2026-07-25、§5-a1）**、
-   (c) DRCA 第3枠完走 → 発進 preflight（verify 全20本 +
+   設計凍結済み（2026-07-25、`anchored_ppo_design.md`）。~~一次実装~~ ~~Arm K 差し戻し
+   修正~~ **消化済み（2026-07-25、「現在の状態」節参照）** — Arm C 合格・Arm K 修正
+   完了（NaN 勾配・検定(20)・§5-a1 ゲート・pool_draw 競合）。
+   ~~(b) 発進ゲート amendment~~ **消化済み（§5-a1）**。
+   残り: DRCA 第3枠完走 → 発進 preflight（verify 全20本 +
    K 400-step 配管スモーク）→ Arm C 発進 → C 判定 → K 発進 → K 判定 → 0b 接続
 
 ## 役割分担

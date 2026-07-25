@@ -81,8 +81,8 @@ def masked_kl_forward(logits: Tensor, ref_logits: Tensor, mask: Tensor) -> Tenso
     probs = masked_softmax(logits, mask)
     logp = masked_log_softmax(logits, mask)
     logp_ref = masked_log_softmax(ref_logits, mask)
-    contrib = probs * (logp - logp_ref)
-    return contrib.masked_fill(~mask, 0.0).sum(-1).mean()
+    diff = (logp - logp_ref).masked_fill(~mask, 0.0)
+    return (probs * diff).sum(-1).mean()
 
 
 def ppo_loss(
