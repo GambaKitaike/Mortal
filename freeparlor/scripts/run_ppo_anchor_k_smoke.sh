@@ -30,9 +30,14 @@ if ! grep -q "$PLACEHOLDER" "$SRC_CONFIG"; then
   exit 1
 fi
 
-if pgrep -f "run_train_ppo.py|run_client.py|run_server.py|drca_run_probe.py|eval_ppo_smoke|eval_grp_baseline|eval_meta" >/dev/null 2>&1; then
+# GPU 1系統ガード。pgrep -f は「パターン文字列を引数に持つシェル」に自己マッチする
+# ため使わない。プロセスの comm が python であることを条件にして実プロセスだけを見る。
+gpu_busy_list() {
+  ps -eo comm=,pid=,args= | awk '($1=="python"||$1=="python3") && $0 ~ /(run_train_ppo|run_client|run_server|drca_run_probe|eval_ppo_smoke_sanity|eval_grp_baseline_1v3|eval_meta_stage1_vs_stage2)\.py/'
+}
+if [[ -n "$(gpu_busy_list)" ]]; then
   echo "FATAL: 学習/eval プロセスが稼働中 (GPU 1系統ルール)" >&2
-  pgrep -af "run_train_ppo.py|run_client.py|run_server.py|drca_run_probe.py|eval_" | head >&2
+  gpu_busy_list | head >&2
   exit 1
 fi
 echo "残党なし"

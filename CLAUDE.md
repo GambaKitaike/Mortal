@@ -121,8 +121,10 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
 
 ### 現在地（要約）
 
-- **進行中**: anchor 系列 **Arm C 本走**（`anchor_c_20260725_164756`、step 16000 まで凍結中）。
-  基礎技能劣化への対策として凍結 init を opponent pool に常駐させる単一変数アブレーション
+- **進行中**: anchor 系列 **Arm K 本走**（`anchor_k_20260727_000805`、step 16000 まで凍結中）。
+  凍結 init への masked full KL を損失に足す単一変数アブレーション
+- **完了・判定待ち**: **Arm C**（resume 込みで完走・eval 全レンズ済み）。
+  数値は下記、**正式判定は牌譜レビュー（レンズ4）後に起草**
 - **中断**: DRCA プローブ本測定（実効5枠のうち2枠のみ完了、§5a-1c で打ち切り裁定）
 - **閉幕**: 探索ラダー Stage1〜3 は全段不成立（本質的機会費用仮説を支持）
 - **新規（2026-07-25、GPU 不要で並行実施）**: 「壊れにくい自己学習 PPO」の設計整理。
@@ -155,35 +157,47 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
 `lag < 0`（版採番の不整合・resume 境界）が 240/11990 バッチ見つかったが、
 Stage1 判定に用いた run ではなく他 7 run では 0 件
 
-### 進行中: anchor Arm C 本走（2026-07-25 17:03:10 JST 発進・凍結中）
+### 完了: anchor Arm C 本走 + eval（2026-07-26 完走・判定は牌譜レビュー待ち）
 
-- run dir `/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756`、tmux セッション
-  `ppo_anchor_c_20260725_164756`、GPU = RTX 5060。init = beta1_huber_192x40
-- config は `freeparlor/configs/ppo_anchor_c.toml`（プレースホルダを launcher が run パスへ
-  in-place 解決。stage1 config との diff は run パス + `[opponent_pool]` の
-  `anchor_prob=0.25` / `anchor_checkpoint`(=init と同一パス) のみ。`kl_beta` はキー不在＝
-  設計された OFF）
-- 発進前 preflight（launcher が自動実行）: 残党チェック・port5000 clear・libriichi rebuild +
-  import smoke・**`verify_ppo_p1.py` 全20検定 PASS**（所要 ~15分）
-- **機械ゲート（@step200）通過**: anchor 採択率 **0.2393**（67/280 draw、期待 0.25±0.05）、
-  anchor が返す checkpoint は全て init で一致。opponent pool engine 構成 dump =
-  `anchor_prob:0.25 / p_enrich:0.0 / call_bonus_b:0.0 / kl_beta:0.0 / eval_mode:False`
-- step 219 時点で監視4項目（mismatch / illegal_action_fallback / chip 解決失敗 /
-  trainer NaN）全て 0、alive clients 3/3
-- **凍結宣言済み: step 16000 完走までコード・config 変更禁止**（例外はクラッシュと
-  データ整合性の破れのみ）。**判定窓は step 8000–16000**（`anchored_ppo_design.md` §6:
-  放銃差 z<2 + チップ +方向≥1SE、1v3 両脚 n=800）。完走・eval・判定は別タスク
-- 発進試行1・2回目は preflight で FATAL 停止（非対話シェル由来で tmux に conda / cargo が
-  未継承。訓練開始前・データ生成なし）。run dir は規約どおり
-  `aborted1_anchor_c_20260725_164338` / `aborted2_anchor_c_20260725_164551` として保全
+- **完走**: 元 run `anchor_c_20260725_164756`（step 0–14100）→ launcher 事故で切断 →
+  `anchor_c_20260726_171144_resume`（step_014000 から 16000 へ、21:27 完走）。
+  完走は `reached step 400`… ではなく `reached step 16000` の COMPLETED 経路、
+  diag max=16000、`step_016000.pth` は steps=16000（sha256 bcd6e6ee…）で照合済み。
+  監視4項目は両 run とも全てゼロ。anchor 採択率は**全期間 0.2459**（16280 draw）で
+  anchor が返した checkpoint は 4003 件すべて init
+- **インシデント（本日の最重要）**: `run_ppo_p3_stage1_inner.sh` の monitor ループが
+  ハードコード 24h DEADLINE を持ち、**期限切れが正常完走と同じ shutdown 経路**
+  （Done → Cleanup → exit 0）へ落ちて step 14100/16000 で SIGTERM。「成功を装った失敗」。
+  Arm C は 24h を超えた最初の run（anchor は draw の 25% で別 checkpoint をロードする
+  ぶん遅い）。修正済み: `MONITOR_HOURS` env（既定 48h）+ `COMPLETED` フラグで
+  正常 break のみ通し、期限切れは exit 8。隔離レプリカで両経路実演
+- **eval バッテリー完了**（`run_eval_anchor_c.sh`、5レンズ直列、23:27 完了）。
+  レンズ2 は判定条件どおり **n=800 両脚**（seed [10000,10200)、牌譜 800×2 実在確認）。
+  ミラー較正脚（バックログ5 初適用）は **overall PASS** でレンズ3 のゼロ点を実測裏付け
+- **数値（判定は未起草 — レンズ4 のレビューが先）**:
+  判定1 の測定器 = 放銃 11.85%→15.45%（**z=+6.57**）、和了 20.60%→17.69%（z=−4.78）、
+  avg_rank 2.4863→2.6575（z=+3.02）。判定2 = チップ +0.035→+0.140（差 +0.105、
+  **+0.45SE**）。拡張: 平均和了打点 **+1137.8点（z=+7.72）**、平均放銃打点 +43（n.s.）、
+  ラス率 +7.50pp（z=+3.33）。メタ対決（vs init×3）素点 −6.913±0.796。
+  **機械的には象限 IV（判定1✗ 判定2✗）だが、正式判定は
+  `qualitative_review_protocol.md` に従い牌譜レビュー後に起草する**
+- **牌譜 HTML 生成済み**: `runs/viewer_out/`（自己対戦 step16000 ×3 + 1v3 ×3）
 
-### 次: anchor Arm K（実装・CPU 検証完了・**未発進**）
+### 進行中: anchor Arm K 本走（2026-07-27 00:20:34 JST 発進）
 
-- `ppo_loss` への masked full KL（`kl_beta=0.1`、pool 不変・anneal なし = 恒久レギュラライザ）。
-  差し戻し修正まで完了済み（NaN 勾配・検定(20) 強化・§5-a1 ゲート改修・pool_draw 競合）
-- **発進前 preflight に `verify_ppo_p1.py` 全20本 + 400-step 配管スモークを統合すること**
-  （GPU 1系統ルールにより Arm C 走行中は実施不可のため持ち越し中）
-- 判定後、K のみ最大1回の機械的再走が許容（過強→β/4、過弱→β×4。`anchored_ppo_design.md` §6a）
+- run dir `/home/gamba/mahjong/runs/ppo/anchor_k_20260727_000805`、tmux 同名、
+  `MONITOR_HOURS=48`。config は `ppo_anchor_k.toml`（diff は run パス +
+  `[ppo] kl_beta=0.1` / `kl_ref_checkpoint=''` のみ。`anchor_prob` はキー不在＝
+  Arm C の介入は OFF ＝単一変数）
+- **400-step 配管スモーク PASS**（`smoke_anchor_k_20260726_233104`、6条件
+  — `check_anchor_k_smoke.py`）: kl_anchor 400件・kl_beta 全て 0.1・kl_ref_mean 全有限
+  かつ >=0・**step0 が 0 ちょうど（ref = step0 方策の陽性対照）**・最終 >0・NaN 痕跡なし。
+  スモークは凍結 config をコピーしてから置換するので placeholder を消費しない
+  （`run_ppo_anchor_k_smoke.sh`）
+- 本走の起動確認: `KL anchor ref model loaded ... (frozen, kl_beta=0.1)`、
+  step0 kl_ref_mean=0 → step1 0.00096 → step2 0.00481 と立ち上がり、
+  監視4項目 0、alive clients 3/3
+- 判定窓 8000–16000、判定条件は §6、再走規定は §6a（K のみ最大1回）
 
 ### 中断中: DRCA プローブ本測定（§5a-1c 打ち切り裁定・2026-07-25）
 

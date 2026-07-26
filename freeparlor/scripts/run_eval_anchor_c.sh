@@ -37,9 +37,14 @@ for f in "$INIT_CKPT" "$FINAL_CKPT" "$RUN_DIR/config.toml"; do
 done
 echo "checkpoint/config 実在 OK"
 
-if pgrep -f "run_train_ppo.py|run_client.py|run_server.py|drca_run_probe.py" >/dev/null 2>&1; then
-  echo "FATAL: 学習/測定プロセスが稼働中 (GPU 1系統ルール)。完走を確認してから実行すること" >&2
-  pgrep -af "run_train_ppo.py|run_client.py|run_server.py|drca_run_probe.py" | head >&2
+# GPU 1系統ガード。pgrep -f は「パターン文字列を引数に持つシェル」に自己マッチする
+# ため使わない。プロセスの comm が python であることを条件にして実プロセスだけを見る。
+gpu_busy_list() {
+  ps -eo comm=,pid=,args= | awk '($1=="python"||$1=="python3") && $0 ~ /(run_train_ppo|run_client|run_server|drca_run_probe|eval_ppo_smoke_sanity|eval_grp_baseline_1v3|eval_meta_stage1_vs_stage2)\.py/'
+}
+if [[ -n "$(gpu_busy_list)" ]]; then
+  echo "FATAL: 学習/eval プロセスが稼働中 (GPU 1系統ルール)" >&2
+  gpu_busy_list | head >&2
   exit 1
 fi
 echo "残党なし"
