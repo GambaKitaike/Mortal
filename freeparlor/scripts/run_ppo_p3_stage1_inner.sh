@@ -258,7 +258,16 @@ count_monitor_metrics() {
   MON_LOADER_DELTA=${MON_LOADER_DELTA:-0}
 }
 
-DEADLINE=$(( $(date +%s) + 86400 ))
+# Monitor wall-clock budget. 2026-07-26 incident: anchor Arm C was the first run
+# slower than the old hard-coded 24h (595-736 step/h vs ~700-1000 for Stage1-3;
+# the anchor pool loads a different checkpoint on 25% of draws). The loop simply
+# fell out of the `while` on deadline expiry and ran the SAME shutdown path as a
+# normal finish (Final log tail -> Done -> Cleanup -> exit 0), SIGTERM-ing the
+# run at step 14100/16000 while reporting success. Deadline expiry is now a loud
+# failure (exit 8) and never reaches the completion path.
+MONITOR_HOURS="${MONITOR_HOURS:-48}"
+DEADLINE=$(( $(date +%s) + MONITOR_HOURS * 3600 ))
+COMPLETED=0
 ALIVE_CLIENTS=$NUM_CLIENTS
 while (( $(date +%s) < DEADLINE )); do
   steps=$(grep -oP 'ppo step \K[0-9]+' "$LOG_DIR/trainer.log" 2>/dev/null | tail -1 || true)
@@ -273,6 +282,7 @@ while (( $(date +%s) < DEADLINE )); do
     # normal shutdown path instead of erroring out with exit 6.
     if (( steps >= MAX_STEPS )); then
       echo "trainer watchdog exited after reaching step $steps (normal completion)" | tee -a "$LOG_DIR/monitor.log"
+      COMPLETED=1
       break
     fi
     echo "ERROR: trainer watchdog exited (see $LOG_DIR/trainer_watchdog.log)" | tee -a "$LOG_DIR/monitor.log"
@@ -309,11 +319,22 @@ while (( $(date +%s) < DEADLINE )); do
   fi
   if (( steps >= MAX_STEPS )); then
     echo "reached step $steps"
+    COMPLETED=1
     break
   fi
   sleep 60
   echo "  steps=$steps/$MAX_STEPS alive_clients=$ALIVE_CLIENTS/$NUM_CLIENTS monitor: mismatch=$MON_MISMATCH fallback=$MON_FALLBACK chip=$MON_CHIP loader_delta=$MON_LOADER_DELTA"
 done
+
+if (( COMPLETED == 0 )); then
+  steps=$(grep -oP 'ppo step \K[0-9]+' "$LOG_DIR/trainer.log" 2>/dev/null | tail -1 || true)
+  echo "FATAL: monitor wall-clock budget (${MONITOR_HOURS}h) expired at step ${steps:-0}/$MAX_STEPS" \
+    | tee -a "$LOG_DIR/monitor.log"
+  echo "  run is TRUNCATED, not complete. Resume from the last checkpoint." \
+    | tee -a "$LOG_DIR/monitor.log"
+  echo "  (raise MONITOR_HOURS for slower runs)" | tee -a "$LOG_DIR/monitor.log"
+  exit 8
+fi
 
 echo "=== Final log tail ==="
 grep 'ppo step' "$LOG_DIR/trainer.log" | tail -5 || true
