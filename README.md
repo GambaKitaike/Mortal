@@ -174,6 +174,8 @@ run 発進は `runs/` の spawn ランチャ（`freeparlor/scripts/run_ppo_*.sh`
 - `freeparlor/docs/reports/fundamentals_degradation_diagnosis_20260725.md` /
   `fundamentals_significance_pass_20260725.md` — 基礎技能劣化の診断と有意性
 - `freeparlor/docs/design/anchored_ppo_design.md` — 現行のanchor系列の設計（凍結済み）
+- `freeparlor/docs/design/teacherfree_training_candidates.md` — 教師データ非依存の
+  訓練方式候補（cold start / 均衡脱出の分離。DRAFT・非事前登録。下記「商用版」の土台）
 - `freeparlor/docs/ops/project_history.md` — 2026-07-06以降の時系列経緯
 - `CLAUDE.md` — 現在の状態・作業規律（進行中runの正）
 
