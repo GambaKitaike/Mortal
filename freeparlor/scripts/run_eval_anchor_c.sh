@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO="/home/gamba/mahjong/Mortal"
-RUN_DIR="${RUN_DIR:-/home/gamba/mahjong/runs/ppo/anchor_c_20260725_164756}"
+RUN_DIR="${RUN_DIR:-/home/gamba/mahjong/runs/ppo/anchor_c_20260726_171144_resume}"
 INIT_CKPT="/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth"
 FINAL_CKPT="$RUN_DIR/checkpoints/step_016000.pth"
 # 判定条件 (§6): 1v3 両脚 n=800 = seeds [10000,10200)、4 半荘/seed
