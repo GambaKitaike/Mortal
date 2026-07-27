@@ -103,6 +103,17 @@ def has_yakuhai(concealed: list[str], melds: list[dict], seat: int,
     return any(c[t] >= 3 for t in targets)
 
 
+def _flush_kyoku(out: Counter, max_pairs: int) -> None:
+    """局の終わりに七対子志向のカウンタを確定する。"""
+    if max_pairs <= 0:
+        return
+    out['kyoku'] += 1
+    if max_pairs >= 4:
+        out['pairs4'] += 1
+    if max_pairs >= 5:
+        out['pairs5'] += 1
+
+
 def analyze_log(path: Path) -> dict:
     seat = seat_from_filename(path)
     with gzip.open(path, 'rt', encoding='utf-8') as f:
@@ -111,6 +122,7 @@ def analyze_log(path: Path) -> dict:
     out = Counter()
     hand: list[str] = []
     melds: list[dict] = []
+    max_pairs = 0        # 門前を保っている間の最大対子数（七対子志向の強さ）
     oya = 0
     bakaze = 'E'
     last_dahai = None
@@ -120,6 +132,8 @@ def analyze_log(path: Path) -> dict:
         t = ev.get('type')
 
         if t == 'start_kyoku':
+            _flush_kyoku(out, max_pairs)
+            max_pairs = 0
             hand = [norm(x) for x in ev['tehais'][seat]]
             melds = []
             oya = ev['oya']
@@ -131,6 +145,9 @@ def analyze_log(path: Path) -> dict:
             if ev['actor'] == seat:
                 hand.append(norm(ev['pai']))
                 last_tsumo = norm(ev['pai'])
+                if not melds:   # 七対子は門前限定なので副露したら計測を止める
+                    c = Counter(hand)
+                    max_pairs = max(max_pairs, sum(1 for v in c.values() if v >= 2))
             continue
 
         if t == 'dahai':
@@ -204,6 +221,7 @@ def analyze_log(path: Path) -> dict:
         if has_yakuhai(concealed, melds, seat, oya, bakaze):
             out['yakuhai'] += 1
 
+    _flush_kyoku(out, max_pairs)
     return dict(out)
 
 
@@ -244,8 +262,22 @@ def main() -> int:
         se = math.sqrt(sa**2 + sb**2) * 100
         print(f'{lab:<22}{a*100:>10.2f}%{b*100:>12.2f}%{diff:>+10.2f}{se:>8.2f}{diff/se:>+8.2f}')
 
+    print(f"\n手順: 七対子志向とその転換（門前を保っている間の最大対子数で判定）\n"
+          f"{'指標':<26}{'init':>11}{args.label:>13}{'diff':>10}{'SE':>8}{'z':>8}")
+    for lab, num, den in [('4対子以上に到達(局比)', 'pairs4', 'kyoku'),
+                          ('5対子以上に到達(局比)', 'pairs5', 'kyoku'),
+                          ('5対子到達→七対子和了', 'chiitoi', 'pairs5')]:
+        a, sa = ratio_and_se(legs['init'], num, den)
+        b, sb = ratio_and_se(legs[args.label], num, den)
+        if a is None or b is None:
+            continue
+        diff = (b - a) * 100
+        se = math.sqrt(sa**2 + sb**2) * 100
+        print(f'{lab:<26}{a*100:>10.2f}%{b*100:>12.2f}%{diff:>+10.2f}{se:>8.2f}{diff/se:>+8.2f}')
+
     print('\n注: 複合（対々和かつ染め手 等）は各分類で独立計上するため合計は 100% にならない。'
-          '平和・タンヤオ等は判定対象外。')
+          '平和・タンヤオ等は判定対象外。「5対子到達→七対子和了」は転換率であり、'
+          '分子の七対子和了には5対子を経ずに和了った稀な場合も含む（近似）。')
     return 0
 
 
