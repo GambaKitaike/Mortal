@@ -38,6 +38,22 @@ cleanup() {
   echo "Cleanup..."
   [[ -n "${MEM_MONITOR_PID:-}" ]] && kill "$MEM_MONITOR_PID" 2>/dev/null || true
   [[ -n "${TRAINER_WATCHDOG_PID:-}" ]] && kill "$TRAINER_WATCHDOG_PID" 2>/dev/null || true
+  # Reap the trainer tree BEFORE the server (2026-07-28). train_ppo.py's own
+  # main() is a supervisor loop (`while True: Popen(child); wait()`) inherited
+  # from the upstream online-DQN trainer, so ~3s after a normal completion it
+  # spawns ONE more child. That child re-loads the checkpoint, hits
+  # `steps >= max_steps` and exits without training a single step (verified in
+  # train_ppo.py:632-639 and in the Arm K log), but it has two side effects:
+  #   - it runs as `<python> .../mortal/train_ppo.py`, a cmdline the
+  #     run_train_ppo.py pattern below does NOT match, so it survives cleanup
+  #     as an orphan holding the GPU;
+  #   - if the server is killed first it dies inside submit_param() with a
+  #     ConnectionRefusedError traceback, which makes a clean 16000-step finish
+  #     look like a crash to anyone reading trainer.log afterwards
+  #     (observed: anchor_k_20260727_000805, diagnosed 2026-07-28).
+  # Killing the whole trainer tree first removes both symptoms.
+  pkill -f "python /home/gamba/mahjong/runs/run_train_ppo.py" 2>/dev/null || true
+  pkill -f "python .*mortal/train_ppo\.py" 2>/dev/null || true
   for pid in "${CLIENT_PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
   [[ -n "${SERVER_PID:-}" ]] && kill "$SERVER_PID" 2>/dev/null || true
   # SERVER_PID / CLIENT_PIDS point at the `conda run` / watchdog-subshell
@@ -46,7 +62,6 @@ cleanup() {
   # server/client are orphaned and left alive (2026-07-10: 8h residual leak).
   # Single-stream rule (one training run at a time) makes broad pattern kill
   # safe; DRCA uses drca_run_probe.py and is unaffected by these patterns.
-  pkill -f "python /home/gamba/mahjong/runs/run_train_ppo.py" 2>/dev/null || true
   pkill -f "python /home/gamba/mahjong/runs/run_server.py" 2>/dev/null || true
   pkill -f "python /home/gamba/mahjong/runs/run_client.py" 2>/dev/null || true
   sleep 2
@@ -56,6 +71,11 @@ trap cleanup EXIT
 
 echo "=== Stopping stale processes ==="
 pkill -f "run_train_ppo.py" 2>/dev/null || true
+# The trainer's own supervisor loop runs the real work as a grandchild whose
+# cmdline is `<python> .../mortal/train_ppo.py` — not matched by the pattern
+# above. Without this line a post-completion orphan from a previous run would
+# only be caught by the GPU-idle gate below (loud, but a manual stop).
+pkill -f "python .*mortal/train_ppo\.py" 2>/dev/null || true
 pkill -f "run_client.py" 2>/dev/null || true
 pkill -f "run_server.py" 2>/dev/null || true
 pkill -f "eval_ppo_smoke_sanity.py" 2>/dev/null || true
@@ -248,8 +268,27 @@ count_alive_clients() {
 echo "=== P3 Stage1 running (max_steps=$MAX_STEPS, ~19h) ==="
 echo "Config: $CFG"
 count_monitor_metrics() {
+  # LEGACY TRIPWIRE — structurally always 0 (2026-07-28). No code in this repo
+  # emits 'trajectory step count mismatch'; the string survives only here, in
+  # verify_ppo_p1.py's counter and in docs (the emitter was lost during the P2
+  # rework). It is kept so that a restored emitter would be caught immediately,
+  # but it must NOT be read as evidence that trajectory joining is healthy —
+  # that is what MON_KEYMISS / MON_ORPHAN below are for.
   MON_MISMATCH=$(grep -h 'trajectory step count mismatch' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
   MON_MISMATCH=${MON_MISMATCH:-0}
+  # LIVE data-loss signals (client.py:108 / :184). These are what actually fire
+  # when the trajectory join breaks: 'game key missing' DISCARDS A WHOLE KYOKU,
+  # 'orphan steps' means recorded steps had no matching game log. verify_ppo_p1
+  # check(13) already asserts both == 0 before launch; until 2026-07-28 nothing
+  # watched them DURING a run. Empirical baseline over three completed 16k runs
+  # (stage3 / anchor_c / anchor_k): 0 occurrences each, while the non-fatal
+  # 'loader size delta' fired 8,759-12,137 times — so a non-zero count here is
+  # a real integrity break, not noise, and gets the same immediate-stop
+  # treatment as the other data-integrity signals (CLAUDE.md workflow rule).
+  MON_KEYMISS=$(grep -h 'trajectory game key missing' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  MON_KEYMISS=${MON_KEYMISS:-0}
+  MON_ORPHAN=$(grep -h 'trajectory orphan steps' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
+  MON_ORPHAN=${MON_ORPHAN:-0}
   MON_FALLBACK=$(grep -hE 'illegal_action_fallback_count=[1-9]' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
   MON_FALLBACK=${MON_FALLBACK:-0}
   MON_CHIP=$(grep -h 'online chip resolution failed' "$LOG_DIR"/client*.log 2>/dev/null | wc -l | tr -d ' ' || true)
@@ -299,8 +338,18 @@ while (( $(date +%s) < DEADLINE )); do
     exit 7
   fi
   if (( MON_MISMATCH > 0 )); then
-    echo "FATAL: trajectory step count mismatch=$MON_MISMATCH"
+    echo "FATAL: trajectory step count mismatch=$MON_MISMATCH" | tee -a "$LOG_DIR/monitor.log"
     exit 4
+  fi
+  if (( MON_KEYMISS > 0 )); then
+    echo "FATAL: trajectory game key missing=$MON_KEYMISS (whole kyoku discarded)" \
+      | tee -a "$LOG_DIR/monitor.log"
+    exit 9
+  fi
+  if (( MON_ORPHAN > 0 )); then
+    echo "FATAL: trajectory orphan steps=$MON_ORPHAN (recorded steps with no game log)" \
+      | tee -a "$LOG_DIR/monitor.log"
+    exit 10
   fi
   if (( MON_FALLBACK > 0 )); then
     echo "FATAL: illegal_action_fallback_count non-zero sessions=$MON_FALLBACK"
@@ -323,7 +372,9 @@ while (( $(date +%s) < DEADLINE )); do
     break
   fi
   sleep 60
-  echo "  steps=$steps/$MAX_STEPS alive_clients=$ALIVE_CLIENTS/$NUM_CLIENTS monitor: mismatch=$MON_MISMATCH fallback=$MON_FALLBACK chip=$MON_CHIP loader_delta=$MON_LOADER_DELTA"
+  echo "  steps=$steps/$MAX_STEPS alive_clients=$ALIVE_CLIENTS/$NUM_CLIENTS monitor:" \
+    "keymiss=$MON_KEYMISS orphan=$MON_ORPHAN fallback=$MON_FALLBACK chip=$MON_CHIP" \
+    "loader_delta=$MON_LOADER_DELTA mismatch=$MON_MISMATCH(legacy:no-emitter)"
 done
 
 if (( COMPLETED == 0 )); then

@@ -73,11 +73,30 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
   例外はクラッシュとデータ整合性の破れのみ。「気になる挙動」は記録して続行
 
 ### 監視期待値（1件でも非ゼロなら報告）
-- `trajectory step count mismatch` = 0（必須）
-- `illegal_action_fallback_count` = 0（必須）
-- `online chip resolution failed` = 0（必須）
-- `loader size delta` = INFO（非致命・報告のみ）
-- alive clients = 3/3、step 到達性（停滞は異常）
+
+**run 中の監視は `run_ppo_p3_stage1_inner.sh` の monitor ループが正**（本節はその写し。
+片側だけ直すと乖離するので、実装を変えたら同一 commit で本節も直す）。
+
+FATAL（検出即停止・run dir は証拠として保全）:
+
+| シグナル | 意味 | exit |
+|---|---|---|
+| `trajectory game key missing` | **その局を丸ごと捨てている**（`client.py:108`） | 9 |
+| `trajectory orphan steps` | 記録済み step に対応する牌譜が無い（`client.py:184`） | 10 |
+| `illegal_action_fallback_count` 非ゼロ | 不正行動のフォールバック | 5 |
+| `online chip resolution failed` | チップ解決の失敗 | 2 |
+| trainer NaN / 非有限 | — | 3 |
+
+非致命: `loader size delta` = INFO（報告のみ。完走 run で 8,759〜12,137 件出るのが平常）。
+その他: alive clients = 3/3、step 到達性（停滞は異常）、monitor 期限切れ = exit 8
+（`MONITOR_HOURS` 既定 48h。**期限切れは正常完走と別経路** — 2026-07-26 インシデント）。
+
+⚠ **`trajectory step count mismatch` はデッドの遺物**（2026-07-28 確認）。この文字列を
+**出力するコードは repo に存在しない**（`verify_ppo_p1.py` の counter と docs にのみ残存。
+P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「0 だから健全」の根拠にならない**。
+監視 grep は emitter 復活時に拾えるよう残してあるが、状態表示は
+`mismatch=0(legacy:no-emitter)` と明示する。trajectory 結合の健全性を見るのは上表の
+最初の2項目（発進前検定 `verify_ppo_p1.py` check(13) は3種とも 0 を assert 済み）
 
 ### 実装の禁則
 - **サイレント修正・サイレントフォールバック禁止**。解決不能は例外で大声で落とすか、
@@ -136,6 +155,10 @@ DRCA プローブで反鳴き均衡が経済の性質であることを確認。
 - **運用（2026-07-28）**: ディスク清掃を Gamba 承認の下で実施。判定 commit 済み run の
   `drain`/`buffer` と検証済み smoke run のみ削除し **727GB 回収（184GB → 909GB）**。
   checkpoints / logs / tb / config / game_logs / DRCA tar は全て保全・実在確認済み
+- **運用（2026-07-28、負債返済）**: バックログ **11 消化**（run 中監視に実在シグナル2種を
+  FATAL 追加、死んだ mismatch は legacy 表示へ降格）、**4/5 の消化を記録**。
+  追跡調査で **train_ppo.py の完走後 trainer 再起動**（本家由来の監督ループ）を発見し、
+  launcher 側の孤児化・偽トレースバックまで対処（根治は Gamba 裁定待ち = バックログ4）
 - **中断**: DRCA プローブ本測定（実効5枠のうち2枠のみ完了、§5a-1c で打ち切り裁定）
 - **閉幕**: 探索ラダー Stage1〜3 は全段不成立（本質的機会費用仮説を支持）
 - **新規（2026-07-25、GPU 不要で並行実施）**: 「壊れにくい自己学習 PPO」の設計整理。
@@ -321,10 +344,21 @@ marginal value は隠れ情報 oracle 層にある、観測用 SP 計算は `age
    残り: **セッション実施**（anchor C/K 判定後）
 3. **Stage2b（解凍実験）の再評価**: 配備税の発見により「収束済み方策の分布シフト適応」の
    商用価値が上がった。実施判断は 0b と併せて検討
-4. **launcher Cleanup 修正の run-validation**（実装・logic 検証は 2026-07-25 bc80aff で完了）:
-   end-to-end 確認は次回の実訓練発進 preflight に持ち越し中 → **Arm K 発進時が該当**
-5. **メタ系ハーネスのミラー較正 RUN**（実装・GPU 非依存検証は 2026-07-25 4d16538 で完了）:
-   実測 RUN は GPU が空いたときに実施
+4. ~~**launcher Cleanup 修正の run-validation**~~ **消化済み（2026-07-28 確認）**:
+   Arm K（`anchor_k_20260727_000805`）が発進 preflight → 24.6h 完走 → 残党ゼロで
+   end-to-end を通した。**ただし追跡調査で別口の欠陥が出た（2026-07-28）**:
+   `mortal/train_ppo.py` の `main()` は本家 online DQN 由来の
+   `while True: Popen(child); wait()` 監督ループで、**完走の約3秒後にもう1つ子を spawn する**。
+   その子は checkpoint を読み直して `steps >= max_steps` で即抜けるので**追加学習は 0 step**
+   だが、(a) cmdline が `<python> .../mortal/train_ppo.py` で cleanup の
+   `run_train_ppo.py` パターンに掛からず**孤児化して GPU を掴み得る**、
+   (b) cleanup が server を先に落とすため `submit_param` が `ConnectionRefusedError` で
+   落ち、**完走 run の trainer.log が例外で終わる**（実例: Arm K。判定値・checkpoint は無傷）。
+   launcher 側で「trainer 系を server より先に reap + 孫パターン追加」まで対処済み。
+   **根治（train_ppo.py 側で完走時に再起動しない）は学習コード変更につき Gamba 裁定待ち**
+5. ~~**メタ系ハーネスのミラー較正 RUN**~~ **消化済み（2026-07-27）**: Arm C の eval
+   バッテリーで初適用し **overall PASS**（理論ミラー値 素点 −5 / 順位点 0 / チップ 0 と
+   SE 圏内で一致）。レンズ3 のゼロ点が実測で裏付けられた（`anchor_arm_c_result.md` §1）
 9. **anchor 系列（現行の優先軸）**: 設計凍結済み（`anchored_ppo_design.md`）。実装・
    Arm C 発進まで消化済み。残り: **C 完走（step16000）→ C の eval バッテリー**
    （argmax 6ckpt + 1v3 n=800 + ミラー較正脚 + メタ対決）**→ レンズ4 定性レビュー**
@@ -351,20 +385,18 @@ marginal value は隠れ情報 oracle 層にある、観測用 SP 計算は `age
      集計値は無傷（山運は N=485 の分岐点間で平均消えする）。壊れているのは**ケース単位の解釈**
    - **着手条件**: DRCA を再開し、かつケース単位の問い（取りこぼし仮説＝選択的な鳴きの価値）を
      立てるとき。anchor 系列の帰結が出るまで保留
-11. **run 中監視の穴埋め（defect・Arm K 発進 preflight で消化）**:
-   **現状の defect**（2026-07-25 実測）: 本書「監視期待値」の第1項
-   `trajectory step count mismatch` は**この文字列を出力するコードが repo に存在しない**
-   （`freeparlor/scripts/` と docs にのみ存在。P2 期の修正で emitter が消えたと推測）ため、
-   **構造的に常に 0** = 実質デッド。一方、実際のデータ落ちシグナル
-   （`mortal/client.py:108` `'trajectory game key missing, skipping game'` = **その局を丸ごと捨てる**、
-   `mortal/client.py:184` `'trajectory orphan steps'`）は
-   **run 中の監視 grep（`run_ppo_p3_stage1_inner.sh:250-259`）が見ていない**。
-   発進前検定（`verify_ppo_p1.py:695-711`）は3種とも 0 を assert しているので、
-   守られていないのは run 中の継続監視だけ。
-   **対応**: inner.sh の監視に2項目を追加（FATAL/NOTICE の区分は実施時に裁定）+
-   死んだ mismatch の扱いを決定（emitter 復活か監視項目から降格か）+
-   **本書「監視期待値」節の記述も同一 commit で実装に合わせる**（片側だけ直すと乖離が
-   別方向にずれる）。バックログ4 と同じ Arm K 発進 preflight で消化する
+11. ~~**run 中監視の穴埋め（defect）**~~ **消化済み（2026-07-28）**:
+   `run_ppo_p3_stage1_inner.sh` の monitor に実在シグナル2種を **FATAL** で追加 —
+   `trajectory game key missing`（exit 9、**その局を丸ごと捨てる**）/
+   `trajectory orphan steps`（exit 10）。FATAL 判断の根拠は完走3 run
+   （stage3 / anchor_c / anchor_k）の実測で**両方とも 0 件**だったこと
+   （同期間に非致命の `loader size delta` は 8,759〜12,137 件）＝ 非ゼロは
+   ノイズではなく実の整合性破れであり、鉄則「データ整合性シグナルで即停止」に載る。
+   死んだ `trajectory step count mismatch` は **grep は残すが「legacy:no-emitter」と
+   明示表示**に降格（emitter 復活時に拾えるようにするため撤去はしない）。
+   本書「監視期待値」節も同一 commit で実装に合わせた。
+   検証: 隔離レプリカ 10 ケース（healthy / loader_delta のみ / 各 FATAL の発火 /
+   legacy が 0 のまま / emitter 復活時に exit 4）+ 完走3 run の実ログ回帰
 12. **壊れにくい自己学習 PPO の実装（0b / Arm K 判定後・別ブランチ・1変数ずつ）**:
    設計ノートは `freeparlor/docs/design/robust_selfplay_ppo_design.md`（DRAFT・裁定非関与）。
    壊れにくさを4層に分解し、anchor 系列が L2（参照点）/ L3（相手分布）をカバーする一方
