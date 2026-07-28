@@ -27,6 +27,11 @@
   2. **3n+2（ツモ後・鳴き後）の規約を自己整合で固定** — 本モジュールの 3n+2 の値は
      「最善の打牌をした後の向聴数」（= 打牌候補全部の最小値）と定義する。
      和了形のみ例外で −1
+  3. **受け入れを libriichi の `waits` と照合** — テンパイ手では受け入れ = 和了牌。
+     ただし libriichi の `waits` は `tiles_seen[t] < 4` で**空聴を除外**する
+     （`update.rs:950`）ので集合として等しくはならない。要求は**包含**
+     `waits ⊆ ours`（破れたら和了牌の取りこぼし = 本物のバグ）。
+     逆側の差は空聴のはずなので件数を INFO で出す
 
 この検証を通したコミットでのみ、本モジュールを使う指標スクリプトを回してよい。
 
@@ -82,6 +87,37 @@
 入力に無い情報**である。素の向聴数を予測させるより marginal value が高い。
 ただし oracle 層（相手の待ち・危険牌）ほどではない — 分解は自手だけから
 決定的に計算できる量なので、**中間の層**に位置づけるのが正確。
+
+## 受け入れ（`ukeire*`）と 1手先の受け入れ（`ukeire_lookahead`）
+
+  ukeire(counts, n_open, seen, form)        受け入れ (種類数, 枚数)。form 指定可
+  ukeire_breakdown(counts, n_open, seen)    4形をまとめて
+  ukeire_tiles(counts, n_open, seen, form)  有効牌の牌種リスト
+  ukeire_lookahead(counts, n_open, seen)    **1手進んだ後**の受け入れ（下記）
+
+### なぜ1手先が要るのか（実測で裏付けた）
+
+`teacherfree_training_candidates.md` §2d の Gamba 指摘: 「受け入れ枚数も
+5ブロック vs 6ブロックの議論のように**1手先だけ見ると誤る**」。
+
+実測（init 脚 6 半荘、門前・向聴 1–2 の 431 局面、向聴を保つ打牌のみ）:
+
+> **「今の受け入れを最大にする打牌」と「1手先の受け入れを最大にする打牌」が
+> 一致するのは 247/431 = 57.3%。残り 42.7% では別の牌を選ぶことになる。**
+
+つまり現在の受け入れ枚数だけをラベルにすると、**4割の局面で誤った順序**を
+教えることになる。1手先まで見る量を併せて持つ理由がここにある。
+
+### 1手先の定義
+
+現在の有効牌 t（引くと向聴が1つ進む牌）それぞれについて、
+「t を引いて**最善の打牌**をした後」の受け入れ枚数を求め、
+**t の山残り枚数で重み付けた平均**を取る（最善 = 向聴最小のうち受け入れ最大）。
+`per_tile` に牌ごとの内訳も持つので、min/max や分散も取れる。
+
+**コスト**: 1決定点あたり約 1ms（キャッシュ温、実測）。全決定点に当てると
+1脚 90k 決定点で ~90 秒なので解析用途なら実用範囲。ただし学習ループ内で
+毎ステップ計算する用途には重いので、その場合は Rust 側での実装を検討すること。
 
 ### 補助タスクのラベルとして使うときの注意
 
@@ -315,28 +351,135 @@ def shanten(counts: tuple[int, ...], n_open: int = 0) -> int:
     return best
 
 
-def ukeire(counts: tuple[int, ...], n_open: int, seen: tuple[int, ...]) -> tuple[int, int]:
+_FORM_FN = {
+    'combined': lambda c, o: shanten(c, o),
+    'normal': lambda c, o: shanten_normal(c, o),
+    'chiitoi': lambda c, o: shanten_chiitoi(c, o),
+    'kokushi': lambda c, o: shanten_kokushi(c, o),
+}
+
+
+def ukeire_tiles(counts: tuple[int, ...], n_open: int, seen: tuple[int, ...] | None = None,
+                 form: str = 'combined') -> list[int]:
+    """有効牌（引くと向聴が進む牌）の**牌種のリスト**を返す。
+
+    `form` を変えると「その形として見たときの有効牌」になる。七対子とメンツ手で
+    有効牌は違う（対子になる牌は七対子を進めるがメンツ手を進めるとは限らない）。
+    `seen` を渡すと**山に残っていない牌を除外**する（`None` なら除外しない
+    = 純粋な形の問題として数える。`waits` との照合にはこちら）。
+    """
+    fn = _FORM_FN[form]
+    base = fn(counts, n_open)
+    if base is None:          # 副露ありの七対子/国士 = その形は存在しない
+        return []
+    out = []
+    lst = list(counts)
+    for t in range(34):
+        if lst[t] >= 4:
+            continue
+        if seen is not None and 4 - seen[t] <= 0:
+            continue
+        lst[t] += 1
+        after = fn(tuple(lst), n_open)
+        lst[t] -= 1
+        if after is not None and after < base:
+            out.append(t)
+    return out
+
+
+def ukeire(counts: tuple[int, ...], n_open: int, seen: tuple[int, ...],
+           form: str = 'combined') -> tuple[int, int]:
     """受け入れを返す: (有効牌の種類数, 残り枚数の合計)。
 
     `seen` は場に見えている枚数（自分の手牌・河・副露・ドラ表示）の 34 カウント。
     残り枚数 = 4 - seen[t] で、0 以下の牌は受け入れに数えない
     （「山に無い牌の受け入れ」を数えると指標が嘘になる）。
+    `form` で形ごとの受け入れに切り替えられる（既定は3形の最小値ベース）。
     """
-    base = shanten(counts, n_open)
-    kinds = 0
-    tiles = 0
-    lst = list(counts)
-    for t in range(34):
+    ts = ukeire_tiles(counts, n_open, seen, form)
+    return len(ts), sum(4 - seen[t] for t in ts)
+
+
+def ukeire_breakdown(counts: tuple[int, ...], n_open: int,
+                     seen: tuple[int, ...]) -> dict[str, tuple[int, int]]:
+    """形ごとの受け入れをまとめて返す（副露ありの七対子/国士は (0, 0)）。"""
+    return {f: ukeire(counts, n_open, seen, f) for f in _FORM_FN}
+
+
+@dataclass(frozen=True)
+class LookaheadUkeire:
+    """**1手進んだ後**の受け入れ（`teacherfree_training_candidates.md` §2d の要求）。
+
+    Gamba の指摘: 「今の受け入れ枚数」は指標として欠陥がある。6ブロックのほうが
+    今の受け入れは広いが、**1手進んだ時点の受け入れは5ブロックのほうが広い**ため、
+    1手先を見ないと形の優劣を取り違える。
+
+    定義: 現在の受け入れ牌 t（引くと向聴が1つ進む牌）それぞれについて、
+    「t を引いて**最善の打牌**をした後」の受け入れ枚数を求め、
+    **t の山残り枚数で重み付けた平均**を取る。最善の打牌 = 向聴最小のうち
+    受け入れ最大（`analyze_call_quality._best_after_call` と同じ規約）。
+    """
+    now_kinds: int          # 現在の受け入れ 種類数
+    now_tiles: int          # 現在の受け入れ 枚数
+    next_tiles_mean: float  # 1手先の受け入れ枚数の（枚数重み付き）平均
+    next_kinds_mean: float
+    next_tiles_min: int
+    next_tiles_max: int
+    per_tile: dict          # 有効牌 -> (次の種類数, 次の枚数)
+
+
+def ukeire_lookahead(counts: tuple[int, ...], n_open: int, seen: tuple[int, ...],
+                     form: str = 'combined') -> LookaheadUkeire:
+    """1手先の受け入れを計算する。**重い**（有効牌数 × 打牌候補 × 34 の向聴計算）。
+
+    実測で1決定点あたり数ミリ秒。全決定点に当てるなら向聴で絞るか標本を取ること。
+    """
+    fn = _FORM_FN[form]
+    accepts = ukeire_tiles(counts, n_open, seen, form)
+    per: dict[int, tuple[int, int]] = {}
+    wsum = 0
+    tsum = 0.0
+    ksum = 0.0
+    for t in accepts:
         remaining = 4 - seen[t]
-        if remaining <= 0 or lst[t] >= 4:
+        drawn = list(counts)
+        drawn[t] += 1
+        seen2 = list(seen)
+        seen2[t] += 1            # 引いた1枚は見えた牌になる
+        seen2_t = tuple(seen2)
+        # 引いた後（3n+2）の最善の打牌を選ぶ: 向聴最小かつ受け入れ最大
+        best_sh = None
+        best_k = best_tiles = -1
+        for d in range(34):
+            if not drawn[d]:
+                continue
+            drawn[d] -= 1
+            cand = tuple(drawn)
+            sh = fn(cand, n_open)
+            if sh is not None and (best_sh is None or sh < best_sh):
+                best_sh = sh
+                best_k = best_tiles = -1
+            if sh is not None and sh == best_sh:
+                k, ti = ukeire(cand, n_open, seen2_t, form)
+                if ti > best_tiles:
+                    best_k, best_tiles = k, ti
+            drawn[d] += 1
+        if best_tiles < 0:
             continue
-        lst[t] += 1
-        adv = shanten(tuple(lst), n_open) < base
-        lst[t] -= 1
-        if adv:
-            kinds += 1
-            tiles += remaining
-    return kinds, tiles
+        per[t] = (best_k, best_tiles)
+        wsum += remaining
+        tsum += remaining * best_tiles
+        ksum += remaining * best_k
+    now_k, now_t = (len(accepts), sum(4 - seen[t] for t in accepts))
+    vals = [v[1] for v in per.values()]
+    return LookaheadUkeire(
+        now_kinds=now_k, now_tiles=now_t,
+        next_tiles_mean=(tsum / wsum) if wsum else 0.0,
+        next_kinds_mean=(ksum / wsum) if wsum else 0.0,
+        next_tiles_min=min(vals) if vals else 0,
+        next_tiles_max=max(vals) if vals else 0,
+        per_tile=per,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -362,6 +505,8 @@ def _validate(log_dir: Path, limit: int) -> int:
     n_32_libdiff = 0           # 3n+2 で libriichi と値が違った件数（既知の規約差）
     n_predeal = 0              # 配牌前（start_game 直後）
     by_form: dict[str, int] = {}   # argmin がどの形だったかの内訳（成分の裏取り）
+    n_waits = n_waits_bad = 0      # 受け入れ vs libriichi の waits（テンパイ手のみ）
+    n_karaten = 0                  # ours にだけある牌（= 空聴。libriichi は除外する）
     for path in paths:
         seat = seat_from_filename(path)
         with gzip.open(path, 'rt', encoding='utf-8') as f:
@@ -393,6 +538,24 @@ def _validate(log_dir: Path, limit: int) -> int:
                     )
                 if mine == st.shanten:
                     by_form[bd.best_form] = by_form.get(bd.best_form, 0) + 1
+                # 受け入れの陽性対照: テンパイ手では「受け入れ = 和了牌」なので
+                # libriichi の PlayerState.waits と突き合わせられる。
+                # ただし libriichi の waits は `tiles_seen[t] < 4` で**空聴を除外**
+                # している（update.rs:950）ので集合として等しくはならない。
+                # 要求は**包含**: waits ⊆ ours。破れたら和了牌を取りこぼしている
+                # = 本物のバグ。逆側の差（ours にだけある牌）は空聴のはずなので
+                # 件数だけ INFO で出す
+                if mine == 0:
+                    ours = set(ukeire_tiles(tehai, n_open, None))
+                    theirs = {t for t, w in enumerate(st.waits) if w}
+                    n_waits += 1
+                    n_karaten += len(ours - theirs)
+                    if not theirs <= ours:
+                        n_waits_bad += 1
+                        if n_waits_bad <= 5:
+                            print(f'WAITS NOT CONTAINED {path.name}: '
+                                  f'libriichi\\ours={sorted(theirs - ours)} '
+                                  f'melds={n_open} tehai={tehai}')
                 if mine != st.shanten:
                     n_31_bad += 1
                     if n_31_bad <= 5:
@@ -428,14 +591,19 @@ def _validate(log_dir: Path, limit: int) -> int:
     print(f'[1] 3n+1 vs libriichi : {n_31 - n_31_bad:,}/{n_31:,} agree')
     forms = ' / '.join(f'{k}={v:,}' for k, v in sorted(by_form.items()))
     print(f'    うち最小値を与えた形の内訳（成分ごとの裏取り）: {forms or "なし"}')
+    print(f'[3] 受け入れ ⊇ libriichi waits (テンパイ手): '
+          f'{n_waits - n_waits_bad:,}/{n_waits:,} 包含を満たす')
+    print(f'    INFO: ours にだけある牌 {n_karaten:,} 件 = 空聴'
+          f'（libriichi は tiles_seen[t]==4 を waits から外す。update.rs:950）')
     print(f'[2] 3n+2 self-consistency: {n_32 - n_32_agari - n_32_bad:,}/'
           f'{n_32 - n_32_agari:,} agree (agari hands excluded: {n_32_agari:,})')
     print(f'    INFO: 3n+2 differs from libriichi in {n_32_libdiff:,}/{n_32:,} '
           f'({n_32_libdiff / max(n_32, 1):.1%}) — known convention gap, see module docstring')
     print(f'    cache: suit_blocks={_suit_blocks.cache_info().currsize:,} '
           f'shanten={shanten.cache_info().currsize:,}')
-    if n_31_bad or n_32_bad:
-        print(f'FAIL: 3n+1 mismatches={n_31_bad:,} / 3n+2 convention breaks={n_32_bad:,}')
+    if n_31_bad or n_32_bad or n_waits_bad:
+        print(f'FAIL: 3n+1 mismatches={n_31_bad:,} / 3n+2 convention breaks={n_32_bad:,}'
+              f' / waits mismatches={n_waits_bad:,}')
         return 1
     print('PASS')
     return 0
