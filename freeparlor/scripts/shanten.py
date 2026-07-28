@@ -39,8 +39,9 @@
   - **3n+2 の値**: libriichi のテーブル実装は 3n+2 で本モジュールと異なる値を返す
     （実測 25% で +1 側にずれる）。libriichi 側のその値は内部利用専用であり、
     **受け入れ計算に必要なのは「打牌後の最小向聴」のほう**なので本モジュールの規約を採る。
-    実測（init 脚 10 半荘）: 3n+1 は 9,901/9,901 で完全一致、3n+2 の自己整合は
-    1,358/1,362（残り4件は全て和了形 = 上の −1 規約による差）
+    実測（3脚 全数、2026-07-29）: 3n+1 は **2,259,173/2,259,173 で完全一致**。
+    最小値を与えた形の内訳は normal 2,067,273 / chiitoi 190,822 / kokushi 1,078 で、
+    **3形とも実データ上で libriichi と一致している**（成分ごとの裏取り）
 
 ## 定義
 
@@ -52,6 +53,45 @@
 
 副露（`n_open`）は完成面子として数える。暗槓・明槓も面子1つ（枚数は 3 として扱う
 = 向聴計算上の扱いは面子と同じ）。
+
+## 形ごとの分解 API（補助タスクのラベル用）
+
+`shanten()` は3つの形の**最小値**しか返さない。`shanten_breakdown()` は
+**通常手 / 七対子 / 国士をそれぞれ**返す:
+
+    bd = shanten_breakdown(tehai34, n_open)
+    bd.normal    # 常に定義される（副露あり手でも）
+    bd.chiitoi   # 門前のみ。副露ありでは None
+    bd.kokushi   # 門前のみ。副露ありでは None
+    bd.combined  # = shanten() と同値
+    bd.best_form # 'normal' | 'chiitoi' | 'kokushi'
+
+### なぜ分解に意味があるのか（obs との重複監査、2026-07-29 一次ソース確認）
+
+`teacherfree_training_candidates.md` §2b は「自手の事実は既に観測の入力にある」と
+監査しており、**素の向聴数についてはそのとおり**である（`obs_repr.rs:395` が
+`state.shanten` を 0–6 の one-hot で符号化している）。
+
+しかし `state.shanten` は `update.rs:876` のとおり
+**`shanten::calc_all(...).max(0)` = 3形の最小値**であり、
+**分解は入力に入っていない**（`obs_repr.rs` に chitoi / kokushi の符号化は無い）。
+つまりネットは「最小値がいくつか」だけを与えられ、
+「どの形で最小なのか」「他の形なら何向聴か」は自力で推論する必要がある。
+
+→ **分解ラベルは §2b の3層のうち「下（既に入力にある）」ではなく、
+入力に無い情報**である。素の向聴数を予測させるより marginal value が高い。
+ただし oracle 層（相手の待ち・危険牌）ほどではない — 分解は自手だけから
+決定的に計算できる量なので、**中間の層**に位置づけるのが正確。
+
+### 補助タスクのラベルとして使うときの注意
+
+  - **副露ありでは chiitoi / kokushi は None**（成立しない形なので値が無い）。
+    予測対象から外すマスクを立てること。0 埋めすると「副露手の七対子向聴は 0」
+    という嘘を教えることになる
+  - 値域: normal `-1..8` / chiitoi `-1..6` / kokushi `-1..13`。
+    分類ヘッドにするならクリップ範囲を形ごとに変えること
+  - **eval/配備経路に漏らさない**規律は補助タスク全般に掛かる
+    （`teacherfree_training_candidates.md` §2f）
 """
 
 from __future__ import annotations
@@ -60,6 +100,7 @@ import argparse
 import gzip
 import json
 import sys
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -180,15 +221,94 @@ def _kokushi_shanten(counts: tuple[int, ...]) -> int:
     return 13 - kinds - (1 if has_pair else 0)
 
 
+def _check(counts: tuple[int, ...]) -> None:
+    if len(counts) != 34:
+        raise ValueError(f'counts must be length 34, got {len(counts)}')
+
+
+@lru_cache(maxsize=1 << 20)
+def shanten_normal(counts: tuple[int, ...], n_open: int = 0) -> int:
+    """**通常手（メンツ手）だけ**の向聴数。副露の有無によらず常に定義される。"""
+    _check(counts)
+    return _normal_shanten(counts, n_open)
+
+
+@lru_cache(maxsize=1 << 18)
+def shanten_chiitoi(counts: tuple[int, ...], n_open: int = 0) -> int | None:
+    """**七対子だけ**の向聴数。副露があると成立しないので `None` を返す。
+
+    `None` は「値が無い」であって 0 ではない。補助タスクのラベルにするときは
+    マスクを立てること（0 埋めは嘘を教えることになる）。
+    """
+    _check(counts)
+    if n_open:
+        return None
+    return _chiitoi_shanten(counts)
+
+
+@lru_cache(maxsize=1 << 18)
+def shanten_kokushi(counts: tuple[int, ...], n_open: int = 0) -> int | None:
+    """**国士無双だけ**の向聴数。副露があると成立しないので `None` を返す。"""
+    _check(counts)
+    if n_open:
+        return None
+    return _kokushi_shanten(counts)
+
+
+@dataclass(frozen=True)
+class ShantenBreakdown:
+    """形ごとの向聴数と、その最小値。
+
+    `chiitoi` / `kokushi` は副露ありで `None`（成立しない形）。
+    `combined` は `shanten()` と同値であることを不変条件とする。
+    """
+    normal: int
+    chiitoi: int | None
+    kokushi: int | None
+    combined: int
+    best_form: str
+
+    def as_label_dict(self) -> dict[str, object]:
+        """補助タスクのラベル用に、値とマスクを分けて返す。"""
+        return {
+            'normal': self.normal,
+            'chiitoi': self.chiitoi if self.chiitoi is not None else 0,
+            'kokushi': self.kokushi if self.kokushi is not None else 0,
+            'chiitoi_valid': self.chiitoi is not None,
+            'kokushi_valid': self.kokushi is not None,
+            'combined': self.combined,
+            'best_form': self.best_form,
+        }
+
+
+def shanten_breakdown(counts: tuple[int, ...], n_open: int = 0) -> ShantenBreakdown:
+    """通常手 / 七対子 / 国士を**それぞれ**計算して返す。
+
+    `obs` v4 は3形の**最小値しか**符号化していない（`obs_repr.rs:395` の
+    `state.shanten` = `calc_all(...).max(0)`）ので、この分解は観測に無い情報。
+    詳細はモジュール docstring の「形ごとの分解 API」節。
+    """
+    n = shanten_normal(counts, n_open)
+    c = shanten_chiitoi(counts, n_open)
+    k = shanten_kokushi(counts, n_open)
+    best, form = n, 'normal'
+    if c is not None and c < best:
+        best, form = c, 'chiitoi'
+    if k is not None and k < best:
+        best, form = k, 'kokushi'
+    return ShantenBreakdown(normal=n, chiitoi=c, kokushi=k,
+                            combined=best, best_form=form)
+
+
 @lru_cache(maxsize=1 << 20)
 def shanten(counts: tuple[int, ...], n_open: int = 0) -> int:
     """手牌 34 種カウント + 副露数から向聴数を返す（テンパイ 0、和了 -1）。
 
+    3形の最小値。**形ごとの内訳が要るなら `shanten_breakdown()`**。
     `counts` は**門前手牌のみ**（副露で晒した牌は含めない）。tuple で渡すこと
     （メモ化のため）。
     """
-    if len(counts) != 34:
-        raise ValueError(f'counts must be length 34, got {len(counts)}')
+    _check(counts)
     best = _normal_shanten(counts, n_open)
     if n_open == 0:
         best = min(best, _chiitoi_shanten(counts), _kokushi_shanten(counts))
@@ -241,6 +361,7 @@ def _validate(log_dir: Path, limit: int) -> int:
     n_32_agari = 0             # 3n+2 のうち和了形（−1 規約で自己整合の例外）
     n_32_libdiff = 0           # 3n+2 で libriichi と値が違った件数（既知の規約差）
     n_predeal = 0              # 配牌前（start_game 直後）
+    by_form: dict[str, int] = {}   # argmin がどの形だったかの内訳（成分の裏取り）
     for path in paths:
         seat = seat_from_filename(path)
         with gzip.open(path, 'rt', encoding='utf-8') as f:
@@ -262,6 +383,16 @@ def _validate(log_dir: Path, limit: int) -> int:
             if total == 13 - 3 * n_open:
                 n_31 += 1
                 mine = shanten(tehai, n_open)
+                # 形ごとの分解も同時に検証する。最小値を与えた形（argmin）については
+                # libriichi の値がその形の値と一致するはずなので、**どの形が
+                # 何件検証されたか**を数える（成分ごとの裏取りになる）。
+                bd = shanten_breakdown(tehai, n_open)
+                if bd.combined != mine:
+                    raise RuntimeError(
+                        f'{path}: breakdown.combined {bd.combined} != shanten {mine}'
+                    )
+                if mine == st.shanten:
+                    by_form[bd.best_form] = by_form.get(bd.best_form, 0) + 1
                 if mine != st.shanten:
                     n_31_bad += 1
                     if n_31_bad <= 5:
@@ -295,6 +426,8 @@ def _validate(log_dir: Path, limit: int) -> int:
 
     print(f'{len(paths)} hanchan / pre-deal states skipped: {n_predeal:,}')
     print(f'[1] 3n+1 vs libriichi : {n_31 - n_31_bad:,}/{n_31:,} agree')
+    forms = ' / '.join(f'{k}={v:,}' for k, v in sorted(by_form.items()))
+    print(f'    うち最小値を与えた形の内訳（成分ごとの裏取り）: {forms or "なし"}')
     print(f'[2] 3n+2 self-consistency: {n_32 - n_32_agari - n_32_bad:,}/'
           f'{n_32 - n_32_agari:,} agree (agari hands excluded: {n_32_agari:,})')
     print(f'    INFO: 3n+2 differs from libriichi in {n_32_libdiff:,}/{n_32:,} '
