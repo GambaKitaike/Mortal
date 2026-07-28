@@ -377,6 +377,31 @@ while (( $(date +%s) < DEADLINE )); do
     "loader_delta=$MON_LOADER_DELTA mismatch=$MON_MISMATCH(legacy:no-emitter)"
 done
 
+if (( COMPLETED == 1 )); then
+  # Give the trainer time to finish its END-OF-RUN work before cleanup SIGTERMs it.
+  # The monitor breaks the moment `ppo step MAX` appears in the log, but at that
+  # point the trainer still has to flush stats and write its final checkpoint(s).
+  # Cleanup used to leave the real worker (`<python> .../mortal/train_ppo.py`)
+  # unmatched by its pkill patterns, so the write always completed by luck; once
+  # that gap was closed (2026-07-28) the SIGTERM started landing mid-write and
+  # truncated a checkpoint (early_probe_20260728_202533 lost step_002000.pth at
+  # 108.8MB of 130.7MB). Wait for the save to be confirmed in the log instead.
+  final_ckpt="step_$(printf '%06d' "$MAX_STEPS").pth"
+  echo "waiting for the trainer to write $final_ckpt before cleanup ..."
+  for _ in $(seq 1 "${FINAL_SAVE_WAIT_TRIES:-60}"); do
+    grep -q "saved numbered checkpoint: .*$final_ckpt" "$LOG_DIR/trainer.log" 2>/dev/null && break
+    sleep 5
+  done
+  if grep -q "saved numbered checkpoint: .*$final_ckpt" "$LOG_DIR/trainer.log" 2>/dev/null; then
+    echo "final checkpoint confirmed: $final_ckpt"
+    sleep 5   # let the file handle flush/close before any SIGTERM
+  else
+    echo "WARNING: $final_ckpt was not confirmed within the grace period; the last" \
+      "checkpoint may be truncated — verify with torch.load before using it" \
+      | tee -a "$LOG_DIR/monitor.log"
+  fi
+fi
+
 if (( COMPLETED == 0 )); then
   steps=$(grep -oP 'ppo step \K[0-9]+' "$LOG_DIR/trainer.log" 2>/dev/null | tail -1 || true)
   echo "FATAL: monitor wall-clock budget (${MONITOR_HOURS}h) expired at step ${steps:-0}/$MAX_STEPS" \
