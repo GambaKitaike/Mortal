@@ -1867,6 +1867,73 @@ def check_kl_anchor(buf: StringIO):
     log('  PASS: KL anchor loss term (20)', buf)
 
 
+def check_diag_checkpoint_stream(buf: StringIO):
+    """(21) Diagnostic checkpoint stream (early_damage_probe_design.md §2b/§8):
+    (a) OFF identity, (b) writes only to checkpoints_diag/, (c) the opponent pool
+    never globs that directory.
+
+    (c) is the point of the whole design: lowering `save_every` to get a finer
+    trajectory would ALSO change the opponent pool, because OpponentPool globs
+    `checkpoints/step_*.pth`. The diag stream must stay invisible to it.
+    """
+    import random
+    from opponent_pool import OpponentPool
+
+    log('(21) Diagnostic checkpoint stream', buf)
+
+    with tempfile.TemporaryDirectory(prefix='ppo_p1_diag_') as tmp:
+        run_dir = Path(tmp)
+        ckpt_dir = run_dir / 'checkpoints'
+        diag_dir = run_dir / 'checkpoints_diag'
+        ckpt_dir.mkdir()
+        for step in (0, 2000):
+            torch.save({'mortal': {}, 'actor_critic': {}, 'steps': step},
+                       ckpt_dir / f'step_{step:06d}.pth')
+
+        pool = OpponentPool(ckpt_dir, past_k=5, latest_prob=0.5)
+        before = [p.name for p in pool.list_checkpoints()]
+        assert before == ['step_000000.pth', 'step_002000.pth'], before
+        log(f'  (a) PASS: pool sees {before} with no diag dir present', buf)
+
+        # (b) the diag stream lands in its own directory only
+        diag_dir.mkdir()
+        for step in range(100, 2001, 100):
+            torch.save({'mortal': {}, 'actor_critic': {}, 'steps': step},
+                       diag_dir / f'step_{step:06d}.pth')
+        regular = sorted(p.name for p in ckpt_dir.glob('*.pth'))
+        assert regular == ['step_000000.pth', 'step_002000.pth'], regular
+        assert len(list(diag_dir.glob('step_*.pth'))) == 20
+        log('  (b) PASS: 20 diag checkpoints written, checkpoints/ unchanged', buf)
+
+        # (c) THE invariant: the pool must not pick up the diag stream
+        after = [p.name for p in pool.list_checkpoints()]
+        assert after == before, f'pool contents changed after diag writes: {after}'
+        seen = set()
+        for seed in range(200):
+            random.seed(seed)
+            path, _kind = pool.sample()
+            seen.add(Path(path).parent.name if path else None)
+        assert seen == {'checkpoints'}, f'pool sampled outside checkpoints/: {seen}'
+        log('  (c) PASS: OpponentPool never globs or samples checkpoints_diag/', buf)
+
+    # (d) OFF identity in the trainer itself: default 0, short-circuited guard,
+    #     and the regular save path untouched.
+    src = (ROOT / 'mortal' / 'train_ppo.py').read_text(encoding='utf-8')
+    assert "config['control'].get('diag_save_every', 0)" in src, \
+        'train_ppo.py must read diag_save_every with a 0 default (designed OFF)'
+    assert 'if diag_save_every and steps % diag_save_every == 0:' in src, \
+        'diag save must be guarded so diag_save_every=0 short-circuits'
+    assert src.count("'checkpoints_diag'") == 1, \
+        'checkpoints_diag must be referenced exactly once (save_diag_checkpoint)'
+    save_ckpt = src.split('def save_checkpoint():', 1)[1].split('def ', 1)[0]
+    assert 'checkpoints_diag' not in save_ckpt, \
+        'save_checkpoint() must not touch the diag directory'
+    log('  (d) PASS: diag_save_every defaults to 0, guard short-circuits, '
+        'save_checkpoint() untouched', buf)
+
+    log('  PASS: diagnostic checkpoint stream (21)', buf)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint', default=DEFAULT_CKPT)
@@ -1907,9 +1974,10 @@ def main():
     check_call_bonus(buf)
     check_anchor_pool(buf)
     check_kl_anchor(buf)
+    check_diag_checkpoint_stream(buf)
 
     log('', buf)
-    passed = 20
+    passed = 21
     log(f'ALL {passed} CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'reports' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')

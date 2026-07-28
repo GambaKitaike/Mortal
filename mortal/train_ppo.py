@@ -43,6 +43,12 @@ def train_ppo():
     max_grad_norm = config['optim']['max_grad_norm']
     online = config['control']['online']
     save_every = config['control']['save_every']
+    # Diagnostic-only checkpoint stream (early_damage_probe_design.md §2b).
+    # Default 0 = OFF = existing paths bit-identical. When > 0 it writes EXTRA
+    # checkpoints to `checkpoints_diag/`, which OpponentPool never globs, so the
+    # opponent distribution is unaffected. Lowering `save_every` instead would
+    # silently change the opponent pool (it globs `checkpoints/step_*.pth`).
+    diag_save_every = config['control'].get('diag_save_every', 0)
     test_every = config['control']['test_every']
     submit_every = config['control']['submit_every']
     test_games = config['test_play']['games']
@@ -145,8 +151,8 @@ def train_ppo():
         trainer_param_version = 1
         logging.info('param has been submitted')
 
-    def save_checkpoint():
-        state = {
+    def _state_dict():
+        return {
             'mortal': mortal.state_dict(),
             'actor_critic': actor_critic.state_dict(),
             'optimizer': optimizer.state_dict(),
@@ -155,12 +161,27 @@ def train_ppo():
             'timestamp': datetime.now().timestamp(),
             'config': config,
         }
+
+    def save_checkpoint():
+        state = _state_dict()
         torch.save(state, state_file)
         ckpt_dir = Path(state_file).parent / 'checkpoints'
         ckpt_dir.mkdir(parents=True, exist_ok=True)
         numbered = ckpt_dir / f'step_{steps:06d}.pth'
         torch.save(state, numbered)
         logging.info(f'saved numbered checkpoint: {numbered}')
+
+    def save_diag_checkpoint():
+        """Observation-only checkpoint for the early-damage probe.
+
+        MUST NOT write into `checkpoints/` — OpponentPool globs that directory,
+        so writing there would change the opponent distribution mid-run.
+        """
+        diag_dir = Path(state_file).parent / 'checkpoints_diag'
+        diag_dir.mkdir(parents=True, exist_ok=True)
+        numbered = diag_dir / f'step_{steps:06d}.pth'
+        torch.save(_state_dict(), numbered)
+        logging.info(f'saved diag checkpoint: {numbered}')
 
     def flush_stats():
         nonlocal stat_count
@@ -585,6 +606,9 @@ def train_ppo():
             submit_param(mortal, actor_critic, is_idle=False, beta_sel=0.0, use_ppo=True)
             trainer_param_version += 1
             logging.info('param has been submitted')
+
+        if diag_save_every and steps % diag_save_every == 0:
+            save_diag_checkpoint()
 
         if steps % save_every == 0:
             flush_stats()
