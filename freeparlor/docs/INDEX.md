@@ -1,15 +1,15 @@
 # freeparlor/docs/ 索引
 
 初版: 2026-07-10（design / reports / ops / archive/dqn への再編時）。
-**最終更新: 2026-07-25**（anchor 系列・DRCA・基礎劣化診断の追加、ステータス再判定、
-L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノートの追加）。
+**最終更新: 2026-07-28**（anchor Arm C/K の判定・レンズ4・checkpoint 軌跡・進路事前登録・
+セッション申し送りを追加。L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノートを追加）。
 日付は文書本文が名乗る日付（= 内容の基準日）。ステータスは判断根拠が明確なもののみ厳密で、
 曖昧なものは本文参照を推奨。
 
 - **active** = 現在も参照される生きた文書 / **frozen** = 事前登録により変更禁止（run 進行中）
 - **closed** = 役目を終えた（判定完了・タスク消化済み） / **DRAFT** = 未凍結・裁定前
 
-## design/ — 設計・pre-registration（9本）
+## design/ — 設計・pre-registration（10本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
@@ -20,10 +20,11 @@ L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノー�
 | `design/stage3_design.md` | 2026-07-11 | closed | Stage3（anneal付きper-decision鳴きボーナス）の設計・事前登録済み判定条件。判定完了（2026-07-13、分岐2成立 → `reports/ppo_p3_stage3_result.md`）。発進ゲートは v1→v2 amendment 済み（§3）。 |
 | `design/stage2_design.md` | 2026-07-06 | closed | Stage2（配牌rejection samplingによる赤濃縮）の設計・事前登録済み判定条件。判定完了（2026-07-11、分岐2成立 → `reports/ppo_p3_stage2_result.md`）。 |
 | `design/product_gaps_design_notes.md` | 2026-07-24 | DRAFT | 商品化設計ギャップ G1–G3 の技術検討メモ（`ops/policy_session_0b_frame.md` §5.3 の材料）。裁定非関与・実装未承認。 |
-| `design/robust_selfplay_ppo_design.md` | 2026-07-25 | DRAFT | 「壊れにくい自己学習PPO」の設計ノート。壊れにくさを4層（L1最適化衛生 / L2参照点 / L3相手分布 / L4運用）に分解し、anchor系列がL2/L3をカバーする一方 **L1とL4が空白**であることを確定。L1の一次証拠は `reports/ppo_optimization_health_20260725.md`。L2「差分だけ学習」の案D1–D4（推奨D3=残差方策、ArmK の ref配線を再利用）、L4 トリップワイヤ、§5 アンカー置換可能性（0b議題5）。**裁定非関与・実装未承認・判定条件は書かない**。 |
+| `design/teacherfree_training_candidates.md` | 2026-07-25（07-26 取り込み） | DRAFT | 教師データ非依存の訓練方式 候補棚卸し。**問題 I（cold start = 天鳳教師フェーズの代替）と 問題 II（均衡脱出）を分離**して候補5本を整理。(1) シミュレータ由来の自己教師あり補助タスク（問題 I の最有力・実体は oracle 蒸留。**`robust_selfplay_ppo_design.md` §5a の A1 と実質同一**）/ (2) リーグ訓練・敵対的搾取者（最も安い・0b 議題3）/ (3) R-NaD 系（**不採用寄り** — 理論保証が4人戦で消える）/ (4) 信念状態つき探索（本丸・最も高い）/ (5) HITL。**事前登録ではない・判定条件を含まない**。 |
+| `design/robust_selfplay_ppo_design.md` | 2026-07-25（07-28 改訂） | DRAFT | 「壊れにくい自己学習PPO」の設計ノート。壊れにくさを4層（L1最適化衛生 / L2参照点 / L3相手分布 / L4運用）に分解し、anchor系列がL2/L3をカバーする一方 **L1とL4が空白**であることを確定。L1の一次証拠は `reports/ppo_optimization_health_20260725.md`。L2「差分だけ学習」の案D1–D4（推奨D3=残差方策、ArmK の ref配線を再利用）、L4 トリップワイヤ、§5 アンカー置換可能性（0b議題5）。**§5b/§5c（07-28 追記）: anchor 系列は商用化で無駄にならない（機構の知見と配管は持ち越せる／アンカーは config パス指定で差し替え可能）が、K の部分的保護は「強い人間譜由来の参照点」で得たものであり、牌譜非依存アンカーで同等以上が出るかは別の実験＝16k run 1本の未計上コスト**。**裁定非関与・実装未承認・判定条件は書かない**。 |
 | `design/reward_audit_teacherfree.md` | 2026-07-01 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
 
-## reports/ — 判定結果・run記録・診断（14本）
+## reports/ — 判定結果・run記録・診断（19本）
 
 > **移動時の制約（2026-07-25 追記）:** `ppo_p1_verify_log.txt` は `verify_ppo_p1.py` が
 > 出力先をハードコードしているため移動不可。`fundamentals_degradation_diagnosis_20260725.md` と
@@ -38,6 +39,11 @@ L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノー�
 | `reports/fundamentals_degradation_diagnosis_20260725.md` | 2026-07-25 | active | 「PPOが与えられた基礎（牌理・降り）を壊している」の診断。anchor系列の動機。 |
 | `reports/fundamentals_significance_pass_20260725.md` | 2026-07-25 | active | 上記 §3(a) への半荘クラスタSE付与。放銃劣化は全stage有意（z +3.9〜+4.4）、和了劣化も有意（−2.1〜−3.6）、avg_rank悪化が有意なのはStage2のみ。 |
 | `reports/ppo_optimization_health_20260725.md` | 2026-07-25 | active | **判定非関与の診断**。診断 §4 が仮説に挙げていないL1層（最適化衛生）の横断実測（8 run）。`minibatch_size=512` は全run全バッチで不発（1 optimizer step = 1半荘の full-batch、median 168–179）/ バッチ到着時点で既に clip_fraction ≈0.20–0.33（陽性対照 step0 は 0.0000、定常staleness は 50–100 step）/ 4 epochs が trust region をほぼ動かさない（e1→e4 = −0.0008〜−0.0032）。因果は主張しない。 |
+| `reports/anchor_arm_c_result.md` | 2026-07-27 | closed | **anchor Arm C 判定**（opponent pool へ凍結 init を常駐）。事前登録条件 §6 への機械的照合の結果 **象限 IV（判定1✗ 判定2✗）= 不成立**。放銃 11.85%→15.45%（z=+6.57）。進路の正は `ops/anchor_c_route_decision_20260726.md`。 |
+| `reports/anchor_arm_k_result.md` | 2026-07-28 | closed | **anchor Arm K 判定**（`ppo_loss` に凍結 init への masked full KL）。**象限 III（判定1✗ 判定2○）= 買ったが払った**。放銃 11.85%→13.16%（z=+2.51、**C の劣化幅の約1/3**）、チップ +0.508（+2.18SE）。**C と結果が分かれ、引き戻しは pool より損失側が効くことを単一変数で確定**。§6a の kl_beta×4 再走は許容だが未実施。 |
+| `reports/anchor_checkpoint_trajectory_20260728.md` | 2026-07-28 | active | **判定非関与の探索的診断**。C/K の中間 checkpoint を判定と同一条件（n=800）で 1v3 測定。**損傷もチップ獲得も最初の 2000 step（全体の 12.5%）でほぼ完了**しており、残り 14000 step は「維持（K）か喪失（C）か」の期間。**KL アンカーの効能は初期劣化の防止ではなくドリフトの停止**。判定1・判定2 を両立する中間 checkpoint は存在しない。 |
+| `reports/qualitative_review_anchor_c_20260727.md` | 2026-07-27 | exploratory | Arm C のレンズ4（Gamba・1半荘、自己対戦 step16000）。**平均和了打点 +1137.8点(z=+7.72) は全層 n.s. の構成シフト由来**（立直和了 54.3%→92.7% / ダマ 21.3%→0.8%）＝ Simpson 型の合成効果で、**成果として引用してはならない**。加カンが実質消滅。 |
+| `reports/qualitative_review_anchor_k_20260728.md` | 2026-07-28 | exploratory | Arm K のレンズ4（Gamba・1半荘、1v3）。「かなり良い。**論外な打ち方が全く無かった**」＝ C の「見るに堪えない」と対照的で定量と同方向。残る所見は七対子決め打ち・打点構築の見送り・鳴き機会の取りこぼし。打点上昇は C 同様に構成シフト由来で全層 n.s.。 |
 
 ### DRCA プローブ
 
@@ -78,7 +84,7 @@ L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノー�
 | `archive/ppo_p1p2/ppo_p2b_lr_probe.md` | 2026-07-03 | PPO P2b lrプローブ（fuuro崩壊のlr要因検証）。 |
 | `archive/ppo_p1p2/ppo_p2c_advantage_decomp.md` | 2026-07-03 | PPO P2c 宣言行動（鳴き・立直）のadvantage分解計装。 |
 
-## ops/ — 運用文書（10本）
+## ops/ — 運用文書（12本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
@@ -87,6 +93,8 @@ L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノー�
 | `ops/project_history.md` | 2026-07-25 | active（履歴） | **CLAUDE.md「現在の状態」節から移設した時系列経緯**（2026-07-06 Stage1判定 〜 2026-07-25 anchor Arm C 発進）+ バックログ原文。不改変保全・追記のみ。 |
 | `ops/run_artifact_retention.md` | 2026-07-16 | active | run成果物の保持・清掃運用（成果物クラス別ポリシー・イベント駆動トリガ・許可リスト方式の削除手順）。2026-07-09 ディスク枯渇インシデントの再発防止。 |
 | `ops/policy_session_0b_frame.md` | 2026-07-16（07-24 §5 / 07-25 §6 追記） | DRAFT | 探索ラダー閉幕後の方針設計セッション（バックログ0b）の事前フレーム。議題×DRCA帰結の分岐シナリオと不足材料リスト。裁定非関与。**議題は 4+1 に拡張（2026-07-25、§6 = 議題5 ライセンス・データ権利の分界。牌譜由来 init への依存を製品にどう持ち込むか + 診断 §6 B の前提変更）**。 |
+| `ops/session_handover_20260728.md` | 2026-07-28 | active | **次セッション（やるべきことの洗い出しと優先順位付け）のための材料整理**。anchor 系列の完了内容と未決事項。裁定は行わない。**優先順位付けの正はこれ**。 |
+| `ops/anchor_c_route_decision_20260726.md` | 2026-07-26 | closed | **Arm C 判定後の進路の事前登録**（結果を見る前に確定 = post-hoc goalpost 禁止の実践）。判定条件は変更せず、4象限それぞれで次に何をするかの資源配分のみ決める。※ **C=IV かつ K=III の組み合わせは明示的に扱っていない**ため次の軸の選択は 0b の裁定事項。 |
 | `ops/next_steps_2.md` | 2026-06-29 | active（歴史） | プロジェクト全体史・引き継ぎメモ（最終目標・初期の現状まとめ）。 |
 | `ops/anchor_impl_task_20260725.md` | 2026-07-25 | closed | anchor系列 Arm C/K の実装タスクプロンプト（実装エージェント宛）。実装完了により消化。 |
 | `ops/anchor_impl_rework_20260725.md` | 2026-07-25 | closed | Arm K 差し戻しプロンプト（NaN勾配・検定(20)強化・§5-a1ゲート改修・pool_draw競合）。修正完了により消化。 |
