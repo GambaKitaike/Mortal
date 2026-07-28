@@ -37,6 +37,19 @@ def run_script(script: str, init_logs: Path, ckpt_logs: Path, label: str) -> str
     return out.stdout
 
 
+def grab_init(text: str, metric: str) -> float:
+    """同じ表から **init 側**の値を取る（基準行の表示に使う）。"""
+    for line in text.splitlines():
+        if not line.startswith(metric):
+            continue
+        nums = re.findall(r'[-+]?\d+\.\d+', line)
+        idx = -7 if '±' in line else -5
+        if len(nums) < abs(idx):
+            continue
+        return float(nums[idx])
+    raise RuntimeError(f'init value for {metric!r} not found')
+
+
 def grab(text: str, metric: str, script: str, label: str) -> tuple[float, float]:
     """指標行から (ckpt 側の値, z) を取る。見つからなければ落とす。
 
@@ -81,6 +94,7 @@ def main() -> int:
     init_pnl = read_pnl(results / 'pnl_init.txt')
 
     rows = []
+    init_base = {}
     for s in args.steps.split():
         label = f'step{s}'
         ckpt_logs = results / f'game_logs_{label}'
@@ -101,6 +115,13 @@ def main() -> int:
         pnl = read_pnl(results / f'pnl_{label}.txt')
         chip_diff = pnl['chip_mean'] - init_pnl['chip_mean']
         chip_se = (pnl['chip_se'] ** 2 + init_pnl['chip_se'] ** 2) ** 0.5
+        if not init_base:
+            init_base = {
+                'houjuu': grab_init(fund, 'houjuu'), 'agari': grab_init(fund, 'agari '),
+                'rank': grab_init(fund, 'avg_rank'),
+                'fold': grab_init(gen, '降りの中断率'),
+                'riichi_share': grab_init(comp, '立直和了 割合'),
+            }
         rows.append({
             'step': int(s), 'houjuu': houjuu, 'houjuu_z': houjuu_z,
             'agari': agari, 'rank': rank, 'rank_z': rank_z,
@@ -115,8 +136,11 @@ def main() -> int:
           f"SE は判定標準 n=800 の約 1.41 倍）\n")
     print(f"{'step':>5} {'放銃%':>7} {'z':>7} {'和了%':>7} {'avg_rank':>9} {'z':>7} "
           f"{'降り中断%':>9} {'z':>7} {'立直和了%':>9} {'z':>7} {'チップ':>8} {'/SE':>7}")
-    print(f"{'0(init)':>5} {init_pnl.get('chip_mean', float('nan')):>7} "
-          f"{'—':>7} {'—':>7} {'—':>9} {'—':>7} {'—':>9} {'—':>7} {'—':>9} {'—':>7} "
+    # init 行は「基準」なので z 列は空。放銃/和了/avg_rank は各 checkpoint の
+    # 比較で毎回出力されるため、ここでは基準として1回だけ出す
+    print(f"{'init':>5} {init_base['houjuu']:>7.2f} {'—':>7} {init_base['agari']:>7.2f} "
+          f"{init_base['rank']:>9.4f} {'—':>7} {init_base['fold']:>9.2f} {'—':>7} "
+          f"{init_base['riichi_share']:>9.2f} {'—':>7} "
           f"{init_pnl['chip_mean']:>+8.3f} {'—':>7}")
     for r in rows:
         print(f"{r['step']:>5} {r['houjuu']:>7.2f} {r['houjuu_z']:>+7.2f} "

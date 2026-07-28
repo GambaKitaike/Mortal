@@ -1,7 +1,7 @@
 # freeparlor/docs/ 索引
 
 初版: 2026-07-10（design / reports / ops / archive/dqn への再編時）。
-**最終更新: 2026-07-28**（anchor Arm C/K の判定・レンズ4・checkpoint 軌跡・進路事前登録・
+**最終更新: 2026-07-29**（anchor Arm C/K の判定・レンズ4・checkpoint 軌跡・進路事前登録・
 セッション申し送りを追加。L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノートを追加）。
 日付は文書本文が名乗る日付（= 内容の基準日）。ステータスは判断根拠が明確なもののみ厳密で、
 曖昧なものは本文参照を推奨。
@@ -14,7 +14,7 @@
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
 | `design/anchored_ppo_design.md` | 2026-07-25 | **frozen（進行中）** | **現行軸**。アンカー付きPPO（基礎劣化対策）の単一変数2 arm — C（opponent pool へ凍結init を anchor_prob=0.25 で常駐）/ K（`ppo_loss` に masked full KL、kl_beta=0.1）。凍結commit 847dc8d が事前登録。判定条件は §6、K の再走規定は §6a、発進ゲートは §5-a1 amendment 済み。 |
-| `design/early_damage_probe_design.md` | 2026-07-28 | **事前登録（診断・判定非関与・未発進）** | step 0–2000 の内部形状を測る短 run（2000 step ≈ 3.1h）。軌跡測定が残した唯一の宿題（この区間に checkpoint が無い）を埋める。**単一変数 = 観測専用の `diag_save_every`**。`save_every` を下げる素朴案は `OpponentPool` の glob 対象を変えて2変数になるため不可（§2a）。判定条件は置かない。発進可否は Gamba 裁定。 |
+| `design/early_damage_probe_design.md` | 2026-07-28（07-29 §4a amendment） | **事前登録（診断・判定非関与・完走済み）** | step 0–2000 の内部形状を測る短 run（2000 step ≈ 3.1h）。軌跡測定が残した唯一の宿題（この区間に checkpoint が無い）を埋める。**単一変数 = 観測専用の `diag_save_every`**。`save_every` を下げる素朴案は `OpponentPool` の glob 対象を変えて2変数になるため不可（§2a）。判定条件は置かない。**発進・完走済み**（`early_probe_20260728_202533`）→ 結果は `reports/early_damage_probe_result_20260729.md`。§4a は測定点終端を 2000→1900 に変える amendment（完走時の cleanup が step_002000.pth を切り詰めたため）。 |
 | `design/ppo_migration_design.md` | 2026-07-02 | active | PPO移行の設計正典。教師データ非依存本線の実装設計（critic scale・希少性探索の分岐を含む）。 |
 | `design/reward_design_teacherfree.md` | 2026-07-01 | active | 教師データ非依存の報酬設計（あ）確定版。reward_audit を受けた本線設計。 |
 | `design/drca_probe_design.md` | 2026-07-12 DRAFT → 07-13 凍結 | frozen（測定は打ち切り） | DRCAプローブ（duplicate rollout による鳴き反実仮想アドバンテージの直接測定）の設計・解釈条件。§5a が事前登録、§5a-1a 規模確定（K=8/N=485）、§5a-1b 48h条項（実効5枠へ削減）、**§5a-1c 打ち切り裁定（2026-07-25、第3枠中断・残枠未測定・主contrast2は評価不能）**。 |
@@ -43,6 +43,7 @@
 | `reports/anchor_arm_c_result.md` | 2026-07-27 | closed | **anchor Arm C 判定**（opponent pool へ凍結 init を常駐）。事前登録条件 §6 への機械的照合の結果 **象限 IV（判定1✗ 判定2✗）= 不成立**。放銃 11.85%→15.45%（z=+6.57）。進路の正は `ops/anchor_c_route_decision_20260726.md`。 |
 | `reports/anchor_arm_k_result.md` | 2026-07-28 | closed | **anchor Arm K 判定**（`ppo_loss` に凍結 init への masked full KL）。**象限 III（判定1✗ 判定2○）= 買ったが払った**。放銃 11.85%→13.16%（z=+2.51、**C の劣化幅の約1/3**）、チップ +0.508（+2.18SE）。**C と結果が分かれ、引き戻しは pool より損失側が効くことを単一変数で確定**。§6a の kl_beta×4 再走は許容だが未実施。 |
 | `reports/anchor_checkpoint_trajectory_20260728.md` | 2026-07-28 | active | **判定非関与の探索的診断**。C/K の中間 checkpoint を判定と同一条件（n=800）で 1v3 測定。**損傷もチップ獲得も最初の 2000 step（全体の 12.5%）でほぼ完了**しており、残り 14000 step は「維持（K）か喪失（C）か」の期間。**KL アンカーの効能は初期劣化の防止ではなくドリフトの停止**。判定1・判定2 を両立する中間 checkpoint は存在しない。 |
+| `reports/early_damage_probe_result_20260729.md` | 2026-07-29 | active | **判定非関与の探索的診断**。step 0–2000 を 100 step 刻みで測る短 run（3.1h）の結果。**立直シフトは step600 でほぼ完了して再現**する一方、**放銃劣化は再現しなかった**（終端 z=+0.16 / 元の観測は z=+3.91）。学習側（KL 乖離量・π(立直) 推移）は両 run でほぼ一致しており config 差ではない。**checkpoint 単位の点推定は隣接 checkpoint 間で 4 SE 幅に振れる**。`anchor_checkpoint_trajectory_20260728.md` の目玉の一部を再現性の観点から格下げする。 |
 | `reports/policy_quality_metrics_20260728.md` | 2026-07-28 | active | **判定非関与の探索的診断**。レンズ4 起票の3指標（鳴きの質 / 牌効率 / 方策の一貫性）を判定と同一の 1v3 牌譜 n=800 で測定。**鳴き判断は両腕とも双方向に劣化**（テンパイ機会の見送り K z=+7.21 / C z=+13.17、取った鳴きのテンパイ率 K z=−2.01 / C z=−3.96）。一方 **牌効率と一貫性は Arm C だけが壊れ Arm K は n.s.**（向聴を外した率 C z=+22.27 / K −0.65、切り順逆転率 C z=+5.69 / K +1.38）＝ 判定と独立な測定が C/K の分岐を再現した。土台の向聴計算器は libriichi と **2,259,173 決定点で不一致ゼロ**。 |
 | `reports/qualitative_review_anchor_c_20260727.md` | 2026-07-27 | exploratory | Arm C のレンズ4（Gamba・1半荘、自己対戦 step16000）。**平均和了打点 +1137.8点(z=+7.72) は全層 n.s. の構成シフト由来**（立直和了 54.3%→92.7% / ダマ 21.3%→0.8%）＝ Simpson 型の合成効果で、**成果として引用してはならない**。加カンが実質消滅。 |
 | `reports/qualitative_review_anchor_k_20260728.md` | 2026-07-28 | exploratory | Arm K のレンズ4（Gamba・1半荘、1v3）。「かなり良い。**論外な打ち方が全く無かった**」＝ C の「見るに堪えない」と対照的で定量と同方向。残る所見は七対子決め打ち・打点構築の見送り・鳴き機会の取りこぼし。打点上昇は C 同様に構成シフト由来で全層 n.s.。 |

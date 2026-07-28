@@ -163,7 +163,16 @@ P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「
   （向聴を外した率 C z=+22.27 / K n.s.、孤立牌の切り順逆転率 C z=+5.69 / K n.s.）。
   = **判定指標と独立な牌理側の測定でも「pool より損失側（KL）」が再現した**。
   土台の向聴計算器 `shanten.py` は libriichi と **2,259,173 決定点で不一致ゼロ**
-- **新規（2026-07-28、事前登録・未発進）**: `early_damage_probe_design.md` —
+- **新規（2026-07-29、最重要）**: 初期損傷プローブ完走 + eval + 集計
+  （`early_damage_probe_result_20260729.md`、判定非関与）。**放銃劣化は独立 run で
+  再現しなかった**（終端 step1900 で z=+0.16 / `anchor_checkpoint_trajectory` の
+  step2000 は z=+3.91）。config diff は2行のみ、KL 乖離量（0.0813 vs 0.0834）も
+  π(立直) の推移もほぼ一致しており**同じ系の run 間ばらつき**と読むのが自然。
+  **再現したのは立直シフト（step600 で 78% に到達）と和了率低下**。
+  → 「損傷は最初の 2000 step で完了」は**行動シフトについては支持、放銃劣化は n=1**。
+  併せて **checkpoint 単位の点推定は隣接 checkpoint 間で 4 SE 幅に振れる**ことが判明し、
+  単一 checkpoint × 単一 eval の比較には run 間ばらつきの見積りが要る
+- **旧（2026-07-28、事前登録・完走済み）**: `early_damage_probe_design.md` —
   step 0–2000 の内部形状を測る短 run（2000 step ≈ 3.1h + eval 数時間）。
   単一変数は観測専用の `diag_save_every`（**`save_every` を下げる素朴案は
   `OpponentPool` の glob 対象を変えて2変数になるので不可** — 同書 §2a）。
