@@ -4,11 +4,15 @@
 # 観測専用の checkpoints_diag/ を 100 step ごとに残す。
 set -euo pipefail
 REPO="/home/gamba/mahjong/Mortal"
+# 同一設計の replicate を走らせるための tag（設計書 §4b）。config も placeholder も
+# この tag から導くので、replicate ごとに config を分けられる（run dir 再利用禁止と
+# 同じ理由で、消費済み placeholder を書き戻して使い回さない）。
+PROBE_TAG="${PROBE_TAG:-early_probe}"
 RUN_SUFFIX="${RUN_SUFFIX:-$(date +%Y%m%d_%H%M%S)}"
-export RUN_DIR="/home/gamba/mahjong/runs/ppo/early_probe_${RUN_SUFFIX}"
-export PPO_CONFIG="$REPO/freeparlor/configs/ppo_early_probe.toml"
-export CONFIG_TAG="early_probe_${RUN_SUFFIX}"
-export TMUX_SESSION="${TMUX_SESSION:-ppo_early_probe_${RUN_SUFFIX}}"
+export RUN_DIR="/home/gamba/mahjong/runs/ppo/${PROBE_TAG}_${RUN_SUFFIX}"
+export PPO_CONFIG="$REPO/freeparlor/configs/ppo_${PROBE_TAG}.toml"
+export CONFIG_TAG="${PROBE_TAG}_${RUN_SUFFIX}"
+export TMUX_SESSION="${TMUX_SESSION:-ppo_${PROBE_TAG}_${RUN_SUFFIX}}"
 # 2000 step ≈ 3.1h（Arm K 実績 16000 step / 24.6h）。既定 48h の監視予算で十分余裕。
 export MAX_STEPS="${MAX_STEPS:-2000}"
 
@@ -23,8 +27,8 @@ if [ "$AVAIL_GB" -lt "$DISK_MIN_GB" ]; then
 fi
 echo "disk check passed: ${AVAIL_GB}G available on $RUNS_ROOT (>= ${DISK_MIN_GB}G)"
 
-PLACEHOLDER="early_probe_PENDING_LAUNCH"
-RESOLVED="early_probe_${RUN_SUFFIX}"
+PLACEHOLDER="${PROBE_TAG}_PENDING_LAUNCH"
+RESOLVED="${PROBE_TAG}_${RUN_SUFFIX}"
 
 if ! grep -q "$PLACEHOLDER" "$PPO_CONFIG"; then
   echo "FATAL: placeholder $PLACEHOLDER not found in $PPO_CONFIG (already resolved by a prior launch?)" >&2
