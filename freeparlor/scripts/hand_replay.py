@@ -64,6 +64,10 @@ class Decision:
     others_riichi: bool
     event: dict                    # この決定点を生んだイベント
     target_tile: int | None        # 鳴き対象牌（鳴き機会でないときは None）
+    melds: tuple                   # 既存の副露 [('k'|'s'|'kan'|'ankan', tile), ...]
+    bakaze: int                    # 場風の牌 index
+    jikaze: int                    # 自風の牌 index
+    n_aka: int                     # 手中の赤ドラ枚数（チップ経済の主因なので分離して持つ）
 
 
 @dataclass
@@ -72,6 +76,8 @@ class _Board:
     riichi: set[int] = field(default_factory=set)
     kyoku: int = 0
     honba: int = 0
+    bakaze: int = 27
+    jikaze: int = 27
 
 
 def replay(path: Path, seat: int, *, shanten_fn=None):
@@ -100,7 +106,13 @@ def replay(path: Path, seat: int, *, shanten_fn=None):
         t = ev.get('type')
 
         if t == 'start_kyoku':
-            board = _Board(kyoku=ev['kyoku'], honba=ev['honba'])
+            # 自風 = 親からの相対位置（E S W N の順）
+            winds = (27, 28, 29, 30)
+            board = _Board(
+                kyoku=ev['kyoku'], honba=ev['honba'],
+                bakaze=tile_id(ev['bakaze']),
+                jikaze=winds[(seat - ev['oya']) % 4],
+            )
             for pai in ev['tehais'][seat]:
                 board.seen[tile_id(pai)] += 1
             board.seen[tile_id(ev['dora_marker'])] += 1
@@ -138,6 +150,12 @@ def replay(path: Path, seat: int, *, shanten_fn=None):
                 others_riichi=bool(board.riichi - {seat}),
                 event=ev,
                 target_tile=target,
+                melds=tuple([('k', b) for b in st.pons] + [('s', b) for b in st.chis]
+                            + [('kan', b) for b in st.minkans]
+                            + [('ankan', b) for b in st.ankans]),
+                bakaze=board.bakaze,
+                jikaze=board.jikaze,
+                n_aka=sum(1 for a in st.akas_in_hand if a),
             )
         yield ev, dec
 
@@ -152,35 +170,37 @@ def replay(path: Path, seat: int, *, shanten_fn=None):
                 board.seen[tile_id(ev['pai'])] += 1
 
 
-def call_variants(tehai: tuple[int, ...], target: int, cans) -> list[tuple[str, tuple[int, ...]]]:
+def call_variants(tehai: tuple[int, ...], target: int, cans) -> list[tuple[str, tuple[int, ...], tuple]]:
     """鳴きを取った場合の門前手牌を、鳴きの種類ごとに返す。
 
-    返り値は (種別, 消費後の手牌 34 カウント) のリスト。副露数は呼び出し側で +1 する。
-    チーは low/mid/high のうち `last_cans` が許した形だけを出す。
+    返り値は (種別, 消費後の手牌 34 カウント, 面子) のリスト。副露数は呼び出し側で +1 する。
+    面子は `yaku.open_hand_yaku` と同じ表現で ('k', 牌) / ('kan', 牌) / ('s', 順子の先頭)。
+    **チーの面子は対象牌ではなく順子の先頭**なので、low/mid/high で先頭が変わる。
+    チーは `last_cans` が許した形だけを出す。
     """
-    out: list[tuple[str, tuple[int, ...]]] = []
+    out: list[tuple[str, tuple[int, ...], tuple]] = []
     h = list(tehai)
 
-    def take(idxs: list[int], label: str) -> None:
+    def take(idxs: list[int], label: str, meld: tuple) -> None:
         for i in idxs:
             if h[i] <= 0:
                 return
         for i in idxs:
             h[i] -= 1
-        out.append((label, tuple(h)))
+        out.append((label, tuple(h), meld))
         for i in idxs:
             h[i] += 1
 
     if cans.can_pon:
-        take([target, target], 'pon')
+        take([target, target], 'pon', ('k', target))
     if cans.can_daiminkan:
-        take([target, target, target], 'daiminkan')
+        take([target, target, target], 'daiminkan', ('kan', target))
     if target < 27:  # チーは数牌のみ
         rank = target % 9
         if cans.can_chi_low and rank <= 6:
-            take([target + 1, target + 2], 'chi')
+            take([target + 1, target + 2], 'chi', ('s', target))
         if cans.can_chi_mid and 1 <= rank <= 7:
-            take([target - 1, target + 1], 'chi')
+            take([target - 1, target + 1], 'chi', ('s', target - 1))
         if cans.can_chi_high and rank >= 2:
-            take([target - 2, target - 1], 'chi')
+            take([target - 2, target - 1], 'chi', ('s', target - 2))
     return out

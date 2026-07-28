@@ -27,6 +27,10 @@
 
 **見送った鳴き機会**（分母 = その鳴きが有効だった機会）:
   4. テンパイ機会の見送り率 — 「鳴けばテンパイできた」機会のうち鳴かなかった割合
+  4b. **うち有役テンパイ機会の見送り率** — 4 のうち、その鳴きで**役の付く**
+      テンパイに取れた機会だけに絞ったもの（`yaku.py`）。副露手は役が無ければ
+      和了れないので、**役無しテンパイにしか取れない鳴きは見送るのが正しい**。
+      4 の分母にはそれが混ざっており見送り率を押し上げていた（実測で約1割ぶん）
   5. 向聴前進機会の見送り率 — 「鳴けば向聴が進む」機会のうち鳴かなかった割合
 
 3 以外は向聴だけで決まるので安い。3 のみ受け入れ計算（34 種の試し引き）が要る。
@@ -36,8 +40,10 @@
   - **向聴前進 = 良い鳴き、ではない**。役無し・守備・打点を無視した指標であり、
     「鳴かないほうが良い」局面で鳴かなかったことは 4/5 では評価できない。
     本指標は**方策間の差分**として読むもので、絶対値の良し悪しは判定しない
-  - 役の有無は判定していない（役判定器が要る）。「役無しでテンパイに取れる鳴き」も
-    テンパイ機会に数えている。`analyze_agari_shape.py` の役牌絡み指標と併読すること
+  - 役の有無は 4b でのみ効かせている。1/2/5（向聴系）は役を見ていないので、
+    「役無しでも向聴は進む鳴き」を機会に数えたままである
+  - `yaku.py` は**海底・河底・嶺上・搶槓を役として数えない**（巡目の運であって
+    手の形の問題ではないため）。実戦ではそれらで和了れる手が「役無し」に落ちる
   - 打点の変化は本書では測らない（和了しない限り確定しないため）。
     和了時の打点は `diagnose_agari_composition.py` が層別で扱う
 """
@@ -56,8 +62,28 @@ sys.path.insert(0, str(_HERE.parents[1] / 'mortal'))
 from analyze_freeparlor_pnl_1v3 import seat_from_filename  # noqa: E402
 from hand_replay import TRANSPARENT_EVENTS, call_variants, replay  # noqa: E402
 from shanten import shanten, ukeire  # noqa: E402
+from yaku import open_hand_yaku  # noqa: E402
 
 CALL_EVENTS = ('pon', 'chi', 'daiminkan')
+
+
+def _tenpai_has_yaku(tehai, n_open, melds, bakaze, jikaze) -> bool:
+    """テンパイ形（3n+1）の待ちのうち1つでも役が付くか。
+
+    副露手は役が無ければ和了れないので、**役無しテンパイにしか取れない鳴きは
+    見送るのが正しい**。この関数で「テンパイ機会」の分母を有役に絞る。
+    待ち = その牌を足すと和了形（向聴 −1）になる牌。
+    """
+    lst = list(tehai)
+    for t in range(34):
+        if lst[t] >= 4:
+            continue
+        lst[t] += 1
+        win = shanten(tuple(lst), n_open) == -1
+        lst[t] -= 1
+        if win and open_hand_yaku(tehai, melds, t, bakaze, jikaze):
+            return True
+    return False
 
 
 def _best_after_call(tehai, n_open, seen, want_ukeire):
@@ -92,6 +118,7 @@ def analyze_log(path: Path, want_ukeire: bool) -> dict:
         'n_taken': 0, 'n_taken_advance': 0, 'n_taken_tenpai': 0,
         'uke_before': 0, 'uke_after': 0, 'n_uke': 0,
         'n_opp_tenpai': 0, 'n_opp_tenpai_declined': 0,
+        'n_opp_yaku_tenpai': 0, 'n_opp_yaku_tenpai_declined': 0,
         'n_opp_advance': 0, 'n_opp_advance_declined': 0,
         'n_opp': 0, 'n_call_events': 0, 'n_opp_ron': 0,
     }
@@ -103,7 +130,7 @@ def analyze_log(path: Path, want_ukeire: bool) -> dict:
         # 直前の鳴き機会が「取られた」かどうかは、次に来るイベントで分かる
         if pending is not None:
             taken = ev.get('type') in CALL_EVENTS and ev.get('actor') == seat
-            sh_before, best_sh, best_uke, uke_before = pending
+            sh_before, best_sh, best_uke, uke_before, yaku_tenpai = pending
             if not taken and ev.get('type') == 'hora' and ev.get('actor') == seat:
                 # ロンで応じた機会は「鳴きを見送った」ではない（和了が優越する）。
                 # 見送り率の分母から外す。黙って落とさず件数を残す
@@ -124,6 +151,12 @@ def analyze_log(path: Path, want_ukeire: bool) -> dict:
                 r['n_opp_tenpai'] += 1
                 if not taken:
                     r['n_opp_tenpai_declined'] += 1
+                # 有役テンパイに絞った分母（副露手は役が無ければ和了れないので、
+                # 役無しテンパイにしか取れない鳴きは見送るのが正しい）
+                if yaku_tenpai:
+                    r['n_opp_yaku_tenpai'] += 1
+                    if not taken:
+                        r['n_opp_yaku_tenpai_declined'] += 1
             if best_sh < sh_before:
                 r['n_opp_advance'] += 1
                 if not taken:
@@ -150,12 +183,30 @@ def analyze_log(path: Path, want_ukeire: bool) -> dict:
             )
         r['n_opp'] += 1
         best_sh, best_uke = 99, -1
-        for _label, hand in variants:
+        yaku_tenpai = False
+        for _label, hand, meld in variants:
             sh, uke = _best_after_call(hand, dec.n_open + 1, dec.seen, want_ukeire)
             if sh < best_sh or (sh == best_sh and uke is not None and uke > best_uke):
                 best_sh, best_uke = sh, uke
+            # 有役テンパイに取れる鳴きが1つでもあるか。テンパイ形は「鳴いた後の
+            # 最善打牌」で作る（打牌の巧拙は本指標の対象外なので最善を仮定する）
+            if sh == 0 and not yaku_tenpai:
+                melds = list(dec.melds) + [meld]
+                lst = list(hand)
+                for d in range(34):
+                    if not lst[d]:
+                        continue
+                    lst[d] -= 1
+                    cand = tuple(lst)
+                    lst[d] += 1
+                    if shanten(cand, dec.n_open + 1) != 0:
+                        continue
+                    if _tenpai_has_yaku(cand, dec.n_open + 1, melds,
+                                        dec.bakaze, dec.jikaze):
+                        yaku_tenpai = True
+                        break
         uke_before = ukeire(dec.tehai, dec.n_open, dec.seen)[1] if want_ukeire else 0
-        pending = (dec.shanten, best_sh, best_uke, uke_before)
+        pending = (dec.shanten, best_sh, best_uke, uke_before, yaku_tenpai)
 
     return r
 
@@ -206,6 +257,7 @@ def main() -> int:
         ('取った鳴き: 向聴前進率',   'n_taken_advance',        'n_taken'),
         ('取った鳴き: テンパイ率',   'n_taken_tenpai',         'n_taken'),
         ('テンパイ機会の見送り率',   'n_opp_tenpai_declined',  'n_opp_tenpai'),
+        ('うち有役テンパイ機会の見送り率', 'n_opp_yaku_tenpai_declined', 'n_opp_yaku_tenpai'),
         ('向聴前進機会の見送り率',   'n_opp_advance_declined', 'n_opp_advance'),
     ]
     for lab, num, den in specs:
