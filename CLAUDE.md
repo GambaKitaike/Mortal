@@ -113,6 +113,14 @@ P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「
 ### 実験の規律
 - 単一変数アブレーション優先。GPU を焼く前に設計文書を commit
 - 判定条件は run 前に固定し、結果を見てから変更しない（post-hoc goalpost 禁止）
+- **seed の使い方（2026-07-29 Gamba 裁定・全実験に掛かる）**: 同一 config の run 間
+  ばらつきが効果量と同程度であることが判明した（`early_damage_probe_result_20260729.md`
+  §9）。よって逐次スクリーニング設計を採る —
+  **新規アイデアは全て 1 seed → 事前登録の判定を満たしたものだけ 2 seed 目 →
+  2 seed とも同じ方向なら採用候補 / 食い違えば「効果不確実」として保留**。
+  「同じ方向」の操作的定義は **2 seed 目を走らせる前に**登録すること
+  （結果を見てから決めると post-hoc goalpost）。正は
+  `freeparlor/docs/ops/policy_session_0b_decisions_20260729.md` §1
 - 挙動の評価は2レンズ併記: argmax eval（配備挙動）と sampled action_mass（学習方向）。
   Stage2 以降は分布にも注意: 訓練測定は濃縮分布上、eval は常に自然分布
   （絶対値の run 跨ぎ比較は不可、倍率同士で比較 — `stage2_design.md` §4）
@@ -148,9 +156,13 @@ P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「
   これが最後**）。config diff は `ppo_anchor_k.toml` との run パス + `kl_beta` の1行のみ。
   判定条件は §6 と同一。完走後の手順（完走確認 → eval → **レンズ4 → 判定**）と
   留保は `session_handover_20260729.md` §3
-- **未確定（意図的）**: 次の軸。「C=IV かつ K=III」は事前登録が覆っていない → **0b 裁定**。
-  **申し送りの正は `freeparlor/docs/ops/session_handover_20260729.md`**
-  （タスク一覧と優先度は §4、裁定事項は §5）
+- **確定（2026-07-29 Gamba 裁定、正は
+  `freeparlor/docs/ops/policy_session_0b_decisions_20260729.md`）**: 次の軸は
+  **L1（最適化衛生）の O1（submit_every 50→10）→ O3（ppo_epochs 4→1）**。
+  その後 **候補2（敵対的搾取者訓練）→ 候補1（oracle 蒸留）** の順。
+  議題1（立直マキシマリズムの商用採否）は**否決**（条件つき — 鳴き判断と牌理が
+  init 水準に戻るまで）、議題2（経済定数変更）は**現行ルールでは行わない**、
+  議題4/5 は保留。**申し送りは `session_handover_20260729.md`**
 - **新規（2026-07-28、最大の発見）**: 中間 checkpoint の軌跡測定により
   **損傷もチップ獲得も最初の 2000 step（全体の 12.5%）でほぼ完了**していることが判明
   （`anchor_checkpoint_trajectory_20260728.md`）。残り 14000 step は「維持（K）か
