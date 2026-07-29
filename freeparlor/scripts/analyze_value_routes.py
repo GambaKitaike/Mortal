@@ -23,10 +23,20 @@ Gamba のレビューが繰り返し指す症状は「和了**率**には現れ�
 
 ### 1. 染め手ルートの放棄率
 
-ある色 q について「q の数牌 + 字牌」が `--flush-min`（既定 9）枚以上あるとき、
-**染め手ルートが現実的**とみなす。その局面で:
+**判定は 2026-07-29 に作り直した**（旧定義の欠陥は §「旧定義の問題」参照）。
+色 q について:
 
-  - **放棄** = q の牌を切った（かつ手に q 以外の数牌が残っていた
+  same_num[q] = q の数牌の枚数 / honors = 字牌の枚数 / other[q] = 他色の数牌の枚数
+
+  対象の色 q* = same_num が最大の色（同点は色番号の小さい方。**順序依存を排除**）
+  染め手ルートが現実的 = same_num[q*] >= `--flush-suit-min`（既定 5）
+                        かつ same_num[q*] + honors >= `--flush-min`（既定 9）
+                        かつ other[q*] > 0
+
+`same_num >= 5` を課すのが要点で、これが無いと**字牌が多いだけの手**
+（例: 字牌8枚 + 萬子1枚）が「萬子の染め手」と判定されてしまう。
+
+  - **放棄** = q* の数牌を切った（かつ他色の数牌が残っていた
     ＝ 先に切るべき牌があったのに染め色を削った）
   - 放棄率 = 放棄 / 染め手ルートが現実的だった打牌
 
@@ -35,12 +45,36 @@ Gamba のレビューが繰り返し指す症状は「和了**率**には現れ�
 手にドラ（表ドラ + 赤）と非ドラが両方あるとき、**ドラのほうを切った**割合。
 ドラ表示牌からのドラ牌は通常の順送り（9→1、北→東、中→白）で解決する。
 
+**他家に立直者がいる局面は除外する**（2026-07-29 追加）。そこでのドラ切りは
+打点放棄ではなく**守備**であり、混ぜると指標の意味が変わる。旧定義では分母の
+21.3% が立直下で、しかもそこはドラ切り率が高かった（2.96% vs 立直なし 2.04%）
+ため、「打点放棄」の読みを水増ししていた。`analyze_tile_efficiency.py` は
+最初から除外しており、**そちらと定義が揃っていなかった**のも問題だった。
+
+## 旧定義の問題（2026-07-29 に修正・記録として残す）
+
+Gamba の指摘を受けて判定基準を実データで点検したところ、旧定義に3つの欠陥があった:
+
+1. **複数色が同時に条件を満たしうる**のに `break` で萬→筒→索の順に最初の色だけを
+   採用していた。実測で **2色該当 6.7% / 3色該当 0.3%**（init 脚 120 半荘、3,179 局面）。
+   → same_num の argmax に変更して順序依存を排除
+2. **字牌を無制限に同色側へ足していた**ので、字牌が多いだけの手が染め手と判定された。
+   実測で **11.1%** の局面が「字牌のほうが同色数牌より多い」。
+   → `same_num >= 5` を必須条件に追加
+3. **他家の立直下を除外していなかった**（ドラ切り率）。実測で分母の **21.3%** が
+   立直下で、そこはドラ切り率が高い（2.96% vs 2.04%）。→ 除外
+
+いずれも init と ckpt の**両方に同じ基準**を当てていたので差分の符号は保たれるが、
+局面クラスの定義としては誤っていた。
+
 ## 限界（**これを外すと誤読する**）
 
-  - **放棄 = 誤り、ではない。** 染め手を畳むのもドラを切るのも、守備・速度・
-    テンパイ料など正当な理由がありうる。**絶対値ではなく init との差分**を読む
-  - 染め手の「現実的」は枚数だけの粗い代理指標で、ターツの形は見ていない
+  - **放棄 = 誤り、ではない。** 染め手を畳むのもドラを切るのも、速度・テンパイ料など
+    正当な理由がありうる。**絶対値ではなく init との差分**を読む
+  - 染め手の「現実的」は枚数だけの代理指標で、ターツの形は見ていない
   - ドラ切りは打点放棄の一部でしかない（ドラを含むターツの解体は数えていない）
+  - **頻度であって質ではない**。「ドラを持ち続ける」と「ドラを活かして打点を作る」は
+    別で、前者だけなら抱えて和了れていない可能性がある
 """
 
 from __future__ import annotations
@@ -69,11 +103,12 @@ def dora_from_marker(marker: int) -> int:
     return 31 + (marker - 31 + 1) % 3     # 三元牌 P F C
 
 
-def analyze_log(path: Path, max_shanten: int, flush_min: int) -> dict:
+def analyze_log(path: Path, max_shanten: int, flush_min: int,
+                flush_suit_min: int) -> dict:
     seat = seat_from_filename(path)
     r = {
         'n_flush': 0, 'n_flush_abandon': 0,
-        'n_dora_choice': 0, 'n_dora_cut': 0,
+        'n_dora_choice': 0, 'n_dora_cut': 0, 'n_dora_skipped_riichi': 0,
         'n_dec': 0,
     }
 
@@ -90,30 +125,36 @@ def analyze_log(path: Path, max_shanten: int, flush_min: int) -> dict:
 
         if pending is not None:
             if ev.get('actor') == seat and ev.get('type') == 'dahai':
-                tehai, cur_dora, aka_held = pending
+                tehai, cur_dora, aka_held, others_riichi = pending
                 pai = ev['pai']
                 cut = tile_id(pai)
                 is_aka_cut = pai.endswith('r')
                 r['n_dec'] += 1
 
                 # --- 1. 染め手ルートの放棄 ---
-                for q in range(3):
-                    lo, hi = q * 9, q * 9 + 9
-                    same = sum(tehai[lo:hi]) + sum(tehai[27:34])
-                    other = sum(tehai[:lo]) + sum(tehai[hi:27])
-                    if same >= flush_min and other > 0:
-                        r['n_flush'] += 1
-                        if lo <= cut < hi:
-                            r['n_flush_abandon'] += 1
-                        break   # 条件を満たす色は高々1つ（枚数的に）
+                honors = sum(tehai[27:34])
+                # 対象の色は same_num の argmax（同点は色番号の小さい方）。
+                # 「最初に条件を満たした色」だと萬→筒→索の順序に依存する
+                q = max(range(3), key=lambda i: sum(tehai[i * 9:i * 9 + 9]))
+                lo, hi = q * 9, q * 9 + 9
+                same_num = sum(tehai[lo:hi])
+                other = sum(tehai[:lo]) + sum(tehai[hi:27])
+                if same_num >= flush_suit_min and same_num + honors >= flush_min \
+                        and other > 0:
+                    r['n_flush'] += 1
+                    if lo <= cut < hi:
+                        r['n_flush_abandon'] += 1
 
-                # --- 2. ドラ切り（非ドラの選択肢があるとき） ---
+                # --- 2. ドラ切り（非ドラの選択肢があるとき・**他家立直下は除外**）---
                 held_dora = sum(tehai[d] for d in cur_dora) + aka_held
                 held_total = sum(tehai)
                 if 0 < held_dora < held_total:
-                    r['n_dora_choice'] += 1
-                    if cut in cur_dora or is_aka_cut:
-                        r['n_dora_cut'] += 1
+                    if others_riichi:
+                        r['n_dora_skipped_riichi'] += 1
+                    else:
+                        r['n_dora_choice'] += 1
+                        if cut in cur_dora or is_aka_cut:
+                            r['n_dora_cut'] += 1
             pending = None
 
         if dec is None:
@@ -122,7 +163,7 @@ def analyze_log(path: Path, max_shanten: int, flush_min: int) -> dict:
             continue
         if dec.self_riichi or dec.shanten > max_shanten:
             continue
-        pending = (dec.tehai, frozenset(dora), dec.n_aka)
+        pending = (dec.tehai, frozenset(dora), dec.n_aka, dec.others_riichi)
 
     return r
 
@@ -147,6 +188,8 @@ def main() -> int:
     ap.add_argument('--max-shanten', type=int, default=4)
     ap.add_argument('--flush-min', type=int, default=9,
                     help='同色+字牌がこの枚数以上で「染め手が現実的」とみなす（既定 9）')
+    ap.add_argument('--flush-suit-min', type=int, default=5,
+                    help='同色の**数牌**の下限（既定 5）。字牌だけで条件を満たす手を除く')
     args = ap.parse_args()
 
     legs = {}
@@ -156,11 +199,13 @@ def main() -> int:
             raise RuntimeError(f'no logs in {d}')
         if args.limit:
             paths = paths[:args.limit]
-        legs[name] = [analyze_log(p, args.max_shanten, args.flush_min) for p in paths]
+        legs[name] = [analyze_log(p, args.max_shanten, args.flush_min,
+                                  args.flush_suit_min) for p in paths]
         print(f'[{name}] {len(paths)} hanchan / 対象打牌 '
               f'{sum(r["n_dec"] for r in legs[name]):,} / '
               f'染め手が現実的 {sum(r["n_flush"] for r in legs[name]):,} / '
-              f'ドラ選択あり {sum(r["n_dora_choice"] for r in legs[name]):,}')
+              f'ドラ選択あり {sum(r["n_dora_choice"] for r in legs[name]):,} '
+              f'(他家立直下で除外 {sum(r["n_dora_skipped_riichi"] for r in legs[name]):,})')
 
     print(f"\n{'metric':<40}{'init':>11}{args.label:>13}{'diff':>10}{'SE':>8}{'z':>8}")
     for lab, num, den in [
