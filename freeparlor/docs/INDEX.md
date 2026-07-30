@@ -1,7 +1,8 @@
 # freeparlor/docs/ 索引
 
 初版: 2026-07-10（design / reports / ops / archive/dqn への再編時）。
-**最終更新: 2026-07-30**（L1 O1 の事前登録案 `design/l1_o1_submit_every_design.md` を追加）。
+**最終更新: 2026-07-30**（L1 O1 の事前登録 `design/l1_o1_submit_every_design.md` と
+Arm K 再走 kl_beta=0.4 の測定記録 `reports/anchor_k_b04_measurements_20260730.md` を追加）。
 2026-07-29（session_handover_20260729 / 初期損傷プローブ結果 / policy_quality_metrics を追加。anchor Arm C/K の判定・レンズ4・checkpoint 軌跡・進路事前登録・
 セッション申し送りを追加。L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノートを追加）。
 日付は文書本文が名乗る日付（= 内容の基準日）。ステータスは判断根拠が明確なもののみ厳密で、
@@ -27,7 +28,7 @@
 | `design/robust_selfplay_ppo_design.md` | 2026-07-25（07-28 改訂） | DRAFT | 「壊れにくい自己学習PPO」の設計ノート。壊れにくさを4層（L1最適化衛生 / L2参照点 / L3相手分布 / L4運用）に分解し、anchor系列がL2/L3をカバーする一方 **L1とL4が空白**であることを確定。L1の一次証拠は `reports/ppo_optimization_health_20260725.md`。L2「差分だけ学習」の案D1–D4（推奨D3=残差方策、ArmK の ref配線を再利用）、L4 トリップワイヤ、§5 アンカー置換可能性（0b議題5）。**§5b/§5c（07-28 追記）: anchor 系列は商用化で無駄にならない（機構の知見と配管は持ち越せる／アンカーは config パス指定で差し替え可能）が、K の部分的保護は「強い人間譜由来の参照点」で得たものであり、牌譜非依存アンカーで同等以上が出るかは別の実験＝16k run 1本の未計上コスト**。**裁定非関与・実装未承認・判定条件は書かない**。 |
 | `design/reward_audit_teacherfree.md` | 2026-07-01 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
 
-## reports/ — 判定結果・run記録・診断（19本）
+## reports/ — 判定結果・run記録・診断（20本）
 
 > **移動時の制約（2026-07-25 追記）:** `ppo_p1_verify_log.txt` は `verify_ppo_p1.py` が
 > 出力先をハードコードしているため移動不可。`fundamentals_degradation_diagnosis_20260725.md` と
@@ -39,6 +40,7 @@
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
+| `reports/anchor_k_b04_measurements_20260730.md` | 2026-07-30 | **測定記録（判定未起草・レンズ4 待ち）** | **Arm K 再走（kl_beta=0.4、§6a の機械的適用・最後の再走）の eval 測定記録**。完走確認（COMPLETED 経路 / sha256 照合 / 監視6項目ゼロ / kl_beta 全 0.4・step0=0.0・全期間平均 0.06895 = K の約半分）+ 判定の測定器（放銃 +1.150pp **z=+2.21** / チップ +0.405 **+1.75SE** ⇒ **機械的には象限 III**）+ 3 arm 横並び。**β×4 は判定を動かさなかった**（変化幅は run 間ばらつきより小さい）。**C/K と違う像**: ダマ和了が消滅していない（12.41% vs C 0.82% / K 0.80%）= 立直マキシマリズムが初めて部分的に停止、打点は層内でも有意（立直和了 +540 z=+2.74 / ダマ −1253 z=−5.07）。**失った資産**: 加カン消滅・切り順の一貫性劣化（z=+2.27、K は n.s.）。判定は `qualitative_review_protocol.md` に従いレンズ4 の後に別途起草する。 |
 | `reports/fundamentals_degradation_diagnosis_20260725.md` | 2026-07-25 | active | 「PPOが与えられた基礎（牌理・降り）を壊している」の診断。anchor系列の動機。 |
 | `reports/fundamentals_significance_pass_20260725.md` | 2026-07-25 | active | 上記 §3(a) への半荘クラスタSE付与。放銃劣化は全stage有意（z +3.9〜+4.4）、和了劣化も有意（−2.1〜−3.6）、avg_rank悪化が有意なのはStage2のみ。 |
 | `reports/ppo_optimization_health_20260725.md` | 2026-07-25 | active | **判定非関与の診断**。診断 §4 が仮説に挙げていないL1層（最適化衛生）の横断実測（8 run）。`minibatch_size=512` は全run全バッチで不発（1 optimizer step = 1半荘の full-batch、median 168–179）/ バッチ到着時点で既に clip_fraction ≈0.20–0.33（陽性対照 step0 は 0.0000、定常staleness は 50–100 step）/ 4 epochs が trust region をほぼ動かさない（e1→e4 = −0.0008〜−0.0032）。因果は主張しない。 |
