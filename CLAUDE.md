@@ -170,9 +170,11 @@ P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「
   議題1（立直マキシマリズムの商用採否）は**否決**（条件つき — 鳴き判断と牌理が
   init 水準に戻るまで）、議題2（経済定数変更）は**現行ルールでは行わない**、
   議題4/5 は保留。**申し送りは `session_handover_20260729.md`**
-- **新規（2026-07-30、GPU 不要で並行実施）**: **L1 O1 の事前登録案を起票**
-  （`freeparlor/docs/design/l1_o1_submit_every_design.md`。**DRAFT・§10 の裁定事項5件が
-  Gamba 裁定待ち。裁定後に §11 を埋めた commit が事前登録**）。判定条件は anchor §6 と
+- **新規（2026-07-30、GPU 不要で並行実施）**: **L1 O1 を事前登録・凍結**
+  （`freeparlor/docs/design/l1_o1_submit_every_design.md`。**§10 の裁定5件は Gamba 回答済み
+  = baseline は plain PPO / 参照脚 n=800 再測は O1 の eval に同梱 / `train_key` ログは入れる /
+  「同じ方向」= 主判定の符号一致 / 2 seed 目は判定1 ○ のときのみ。§11 が凍結記録、
+  結果は §12 へ追記**）。判定条件は anchor §6 と
   同一計測器（放銃差 z<2 / チップ +方向 ≥1SE / 1v3 両脚 n=800）にして C/K/b04 と横並び。
   **測って初めて分かった最重要事実**: staleness 92–94 step は
   **「量子化 24.5 = (submit_every−1)/2」+「transit 67–70 step」**に厳密分解でき

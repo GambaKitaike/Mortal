@@ -1,8 +1,8 @@
 # L1 O1（`submit_every` 引き下げ）設計書 — 最適化衛生の単一変数対照実験
 
 **日付:** 2026-07-30
-**ステータス:** **事前登録案（DRAFT）**。§10 の裁定事項に Gamba の裁定が付いた時点で §11 を
-確定させ、その commit を事前登録とする。**それまで発進しない**
+**ステータス:** **凍結済み（2026-07-30、Gamba 裁定 = §10 の5件すべてに回答済み。
+本 commit が事前登録）。以後の変更禁止**（許容されるのは結果数値の §12 への追記のみ）
 **起草:** 実装エージェント（Claude Code）。設計判断・採否は Gamba
 **位置づけ:** `../ops/policy_session_0b_decisions_20260729.md` §2 が定めた次の軸
 （**L1 の O1 → O3**）の O1。同 §2 は「発進前に design md で判定条件を事前登録すること」を
@@ -104,9 +104,9 @@ trainer.log の timestamp から submit 1 回のオーバーヘッドを実測:
 - `save_every = 2000` は 10 の倍数なので、`train_ppo.py:619-622` の追加 submit は発生しない
   （version と step の対応が保たれ、§4 のゲートが機械的に検査できる）。
 
-## 2. 対照（baseline）の選択
+## 2. 対照（baseline）の選択 — **plain PPO（Gamba 裁定 2026-07-30）**
 
-**推奨: plain PPO（Stage1 相当 config、anchor なし）を base にする。**
+**確定: plain PPO（Stage1 相当 config、anchor なし）を base にする。**
 = O1 の config は `freeparlor/configs/ppo_p3_stage1.toml` との diff が
 **run パス + `submit_every` の1行のみ**。
 
@@ -123,7 +123,10 @@ trainer.log の timestamp から submit 1 回のオーバーヘッドを実測:
 - plain PPO なら headroom が約 3 倍あり、かつ L2（アンカー）と混ざらないので
   「L1 単独の因果」という問いに正しく答える。
 - 代償: 参照 run（Stage1）の 1v3 が n=400 で、計測器が判定用の n=800 と揃わない。
-  → §7 の**参照脚の再測**（GPU ~1h）で解消できる。裁定事項1。
+  → **§7 の参照脚の再測を実施する（裁定済み）。実施は O1 完走後の eval バッテリーに1脚同梱**。
+  eval は決定論的で参照 checkpoint は固定（`fundamentals_significance_pass_20260725.md` §2 が
+  init 脚の diff = 0.000 を実証）なので、**測る時期を後にしても post-hoc goalpost にならない**
+  — 凍結すべきは「n=800 の値を `Δ放銃_ref` に使う」という決定であり、それを本 commit で行う。
 
 ## 3. 判定条件（**裁定後に凍結。以後変更禁止**）
 
@@ -211,14 +214,19 @@ trainer.log の timestamp から submit 1 回のオーバーヘッドを実測:
 （`mortal/` 全体を grep 済み、run の client ログにも 0 件）。よって
 (a) 2 本の run が実際に異なる key だったことは**事後検証できない**、
 (b) run の完全な再現は**原理的に不可能**。
-**提案**: client 起動時に `train_key` を INFO ログ 1 行で出す（観測のみ・学習に影響しない）。
-O1 の run に含めるかは 1 変数規律の解釈なので Gamba 裁定。
+**対応（確定・Gamba 裁定 2026-07-30）: `train_key` を INFO ログに出す。O1 の run に含める。**
+`TrainPlayer.__init__` で `train_key` / `train_seed` / `seed_count` / profile を 1 行 INFO する
+（**観測のみ。学習・rollout・報酬に一切影響しない**）。これで
+(a) 2 本の run が別 seed だったことが事後検証可能になり、
+(b) 将来 `train_key` を config 化すれば再現も可能になる（本 run では config 化しない = 1 変数維持）。
+**`TrainPlayer` は訓練 client 専用**（eval は `eval_grp_baseline_1v3.py` /
+`eval_ppo_smoke_sanity.py` が `OneVsThree` を直接叩く）ので、eval 経路には現れない。
 
 ### 5b. 「同じ方向」の操作的定義（**2 seed 目を走らせる前に固定する**）
 
 0b §1a は (a) 同じ象限 か (b) 主判定の符号一致 かを選ぶよう要求している。
 
-> **推奨（実装エージェント案・0b §1a の推奨どおり）: (b) 主判定の符号一致。有意性は問わない。**
+> **確定（Gamba 裁定 2026-07-30）: (b) 主判定の符号一致。有意性は問わない。**
 >
 > 2 seed が次の**両方**で一致したとき「同じ方向」= **採用候補**:
 >
@@ -235,10 +243,11 @@ run 間ばらつきが効果量と同程度（0b §1 の前提事実）である
 （GPU 予算を倍にせずに再現性を担保）と矛盾する。**
 2 本目は**再現性の確認**であって独立の判定ではない、という位置づけを符号一致が正しく表す。
 
-**採否は Gamba（裁定事項4）。** ここで固定しないまま 2 本目を走らせることは禁止
-（post-hoc goalpost になる）。
+`Δ放銃_ref` は §11 で凍結する（**Stage1-16000 の n=800 実測値**。参考として
+n=400 の既測値は +3.06pp — `fundamentals_significance_pass_20260725.md` §1）。
+2 seed が同一計測器・同一 init 脚なので、S1 は実質 `sign(放銃_O1 − 放銃_Stage1)` になる。
 
-### 5c. 2 seed 目を走らせる条件
+### 5c. 2 seed 目を走らせる条件（**確定・Gamba 裁定 2026-07-30**）
 
 0b §1 のとおり **1 本目が §3 の判定を満たしたときのみ**。
 「満たした」の操作的定義は **判定1 ○（z<2）**とする（判定2 は経済側の確認であり、
@@ -255,21 +264,34 @@ H(O1) の主張は判定1 が担う）。判定1 ✗ の場合、2 本目は走�
   `MONITOR_HOURS` 既定 48h のまま（実績 22–25h）
 - run 命名: `l1_o1_<日時>`（日時 suffix・再利用禁止）
 - 検定: 新規 assert は不要（§8）。既存 `verify_ppo_p1.py` 全数 PASS が条件
-- **学習コード（`mortal/`）と libriichi は一切触らない**
+- **`mortal/` への変更は `TrainPlayer.__init__` の INFO ログ 1 行のみ**（§5a・裁定事項3）。
+  観測のみで学習経路・eval 経路の挙動を変えない。**libriichi は触らない**
+  （= run 発進時の rebuild は preflight の恒常手順としてのみ走る）
 
 ## 7. eval バッテリー（§3 の計測器）
 
 `run_eval_anchor_c.sh` を RUN_DIR 差し替えで再利用（Arm K / b04 と同じ運用）:
 argmax 6ckpt + grp_baseline 1v3 **n=800 両脚** + ミラー較正脚 + メタ対決。
 
-**追加提案（裁定事項1）: 参照脚の再測。**
+**参照脚の再測（確定・Gamba 裁定 2026-07-30。O1 の eval バッテリーに同梱する）:**
 `stage1_20260706_020120_resume/checkpoints/step_016000.pth` を **n=800・seeds [10000,10200)** で
-1 脚だけ測り直し、baseline の登録値 `Δ放銃_ref` を判定と同一の計測器に揃える。
+1 脚だけ測り直し、`Δ放銃_ref` を判定と同一の計測器に揃える。既存ハーネスを env で叩くだけで、
+新規測定ロジックは書かない:
 
-- コスト: 1v3 1 脚 ≈ **GPU 1 時間**（init 脚は決定論的同一なので再利用可 —
-  `fundamentals_significance_pass_20260725.md` §2）
+```bash
+# O1 の run dir の中に置く（出力先を分けて init/step16000 脚と混ざらないようにする）
+export PYTHONPATH=/home/gamba/mahjong/Mortal/mortal PYTHONUNBUFFERED=1
+export MORTAL_CFG=<O1_RUN_DIR>/config.toml
+EVAL_LABEL=ref_stage1_16000 \
+EVAL_CHECKPOINT=/home/gamba/mahjong/runs/ppo/stage1_20260706_020120_resume/checkpoints/step_016000.pth \
+EVAL_SEED_COUNT=200 \
+conda run --no-capture-output -n mortal python freeparlor/scripts/eval_grp_baseline_1v3.py
+```
+
+- コスト: 1v3 1 脚 ≈ **6 分**（Arm K 実績: n=800 1 脚が 5.5 分）。init 脚は決定論的同一なので再利用
 - 効果: §2 の唯一の弱点（n=400 vs n=800）が消え、§5b の S1 が同一計測器上の差になる
-- 実施時期: **O1 発進前**（後から測ると「baseline を選び直した」に見える）
+- **後から測っても post-hoc にならない理由**: 参照 checkpoint は固定・eval は決定論的なので、
+  得られる数値は測定時期に依らない。凍結すべき「この値を ref に使う」という決定は本 commit で済んでいる
 
 ## 8. 留保（結果の読みに必ず添える）
 
@@ -300,32 +322,60 @@ argmax 6ckpt + grp_baseline 1v3 **n=800 両脚** + ミラー較正脚 + メタ�
 | eval バッテリー | GPU 数時間 |
 | 2 seed 目（判定1 ○ のときのみ） | 上記の run + eval を 1 回 |
 
-## 10. 裁定事項（Gamba。**すべて発進前**）
+## 10. 裁定の記録（Gamba、2026-07-30。**5件すべて回答済み**）
 
-1. **baseline を plain PPO（Stage1 相当）にするか、Arm K にするか。**
-   実装側推奨 = **plain PPO**（§2 の検出力）。併せて §7 の**参照脚 n=800 再測**（GPU 1h）の可否
-2. **transit 成分（67–70 step、staleness の 74%）を叩く変数を O1 の後に置くか。**
-   `[train_play.clientN] games = 20` を下げる案（例 20→5）は config 1 値で
-   staleness を ~20 step 台まで落とせる見込みだが、**別の変数**であり
-   (a) drain の世代数・IO が 4 倍、(b) client 1 session あたりの
-   `train_seed` 前進量が変わる、(c) O1 と併用すると 2 変数になる。
-   **本書では実装しない。提案として記録する**（`robust_selfplay_ppo_design.md` の
-   L1 候補に O6 として追加するかも含めて裁定）
-3. **`train_key` の INFO ログ 1 行を O1 の run に含めるか**（§5a の副作用）。
-   観測のみ・学習に影響しないが、厳密には 1 行のコード追加
-4. **§5b の「同じ方向」= 主判定の符号一致（推奨）で確定してよいか**
-5. **§5c の「2 seed 目に進む条件 = 判定1 ○」で確定してよいか**
+| # | 論点 | 裁定 |
+|---|---|---|
+| 1 | baseline を plain PPO / Arm K のどちらにするか | **plain PPO**（§2）。併せて **§7 の参照脚 n=800 再測を実施**（O1 の eval バッテリーに同梱） |
+| 2 | transit 成分を叩く変数（`games` 20→5）を O1 の後に置くか | **保留**（下記 §10a に提案として保全。捨てない） |
+| 3 | `train_key` の INFO ログを O1 の run に含めるか | **含める**（§5a・§6） |
+| 4 | 「同じ方向」= 主判定の符号一致で確定してよいか | **確定**（§5b） |
+| 5 | 2 seed 目に進む条件 = 判定1 ○ で確定してよいか | **確定**（§5c） |
 
-## 11. 凍結記録（**Gamba 裁定後に埋める。埋めた commit を事前登録とする**）
+### 10a. 保留した提案（裁定事項2。**捨てずに記録する**）
 
-- [ ] baseline = ?（plain PPO / Arm K）→ `Δ放銃_ref` = ? pp（出典 run と n を明記）
-- [ ] 参照脚 n=800 再測の実施 = ?（する / しない）
-- [ ] 判定条件 = §3 本文（判定1: 放銃差 z<2 / 判定2: チップ +方向かつ ≥1SE / 1v3 両脚 n=800・
-      seeds [10000,10200)）。**再走なし**（§3a）
-- [ ] 判定窓 = step 8000–16000（従来踏襲）／判定は step16000 checkpoint
-- [ ] 発進ゲート = §4（機械のみ。staleness の絶対値は INFO）
-- [ ] 「別 seed」= 同一 config・新規 run dir（§5a）
-- [ ] 「同じ方向」= ?（(b) 主判定の符号一致 / (a) 同じ象限）
-- [ ] 2 seed 目に進む条件 = ?（判定1 ○ / その他）
-- [ ] `train_key` ログ追加 = ?（する / しない）
-- [ ] run 命名 = `l1_o1_<日時>` / ブランチ = `l1-o1-submit-every` / config = `ppo_l1_o1.toml`
+**O6（仮称）: `[train_play.clientN] games` を下げる（例 20 → 5）。**
+staleness の transit 成分（67–70 step = 全体の 74%）を直接叩ける唯一の config 変数で、
+実現すれば staleness は 20 step 台まで落ちる見込み（O1 の −22% に対し −75% 級）。
+
+- **本書では実装しない**（O1 と併用すると 2 変数になる）
+- 未検討のコスト: (a) drain の世代数・IO が 4 倍（b04 実績 765 世代 → ~3060 世代）、
+  (b) client 1 session あたりの `train_seed` 前進量が変わる（`player.py:317-318`）、
+  (c) 1 session が短いほど client の param 取得回数が増え、GPU の
+  checkpoint ロード時間の比率が上がる（スループット未実測）
+- **再評価の条件**: O1 の結果が出た後。O1 が判定1 ○ なら staleness 仮説が支持されるので
+  O6 の価値が上がる。判定1 ✗ でも「量子化 24.5 step では足りなかった」だけなので
+  O6 は棄却されない（§8-2）
+
+## 11. 凍結記録（**2026-07-30、Gamba 裁定。本 commit が事前登録。以後変更禁止**）
+
+- [x] **baseline = plain PPO**（Stage1 相当 config、anchor なし）。
+      `Δ放銃_ref` = **`stage1_20260706_020120_resume/checkpoints/step_016000.pth` の
+      n=800・seeds [10000,10200) 実測値**（§7 の参照脚で測る。参考: n=400 の既測値は **+3.06pp**）
+- [x] **参照脚 n=800 再測 = する**（O1 完走後の eval バッテリーに1脚同梱。§7 のコマンドで）
+- [x] **判定条件 = §3 本文**（判定1: 放銃差 z<2 / 判定2: チップ/半荘 +方向かつ ≥1SE /
+      1v3 両脚 n=800・seeds [10000,10200)・argmax・guard ON・自然分布）。**再走なし**（§3a）
+- [x] **判定窓 = step 8000–16000**（従来踏襲）／判定は **step16000** checkpoint
+- [x] **発進ゲート = §4**（機械ゲートのみ。staleness の絶対値は INFO で合否条件にしない）
+- [x] **「別 seed」= 同一 config・新規 run dir**（`train_key` は `secrets.randbits(64)` で
+      client ごと・run ごとに独立。config 変更は不要。§5a）
+- [x] **「同じ方向」= (b) 主判定の符号一致**（S1 = sign(Δ放銃_O1 − Δ放銃_ref) /
+      S2 = sign(Δチップ_O1)、**有意性は問わない**。両方一致で採用候補、片方でも食い違えば
+      「効果不確実」で保留）
+- [x] **2 seed 目に進む条件 = 判定1 ○（z<2）**。判定1 ✗ なら 2 本目を走らせず O3 へ
+- [x] **`train_key` ログ追加 = する**（`TrainPlayer.__init__` の INFO 1 行。観測のみ）
+- [x] **単一変数 = `[control] submit_every` 50 → 10 のみ。** run 命名 `l1_o1_<日時>` /
+      ブランチ `l1-o1-submit-every` / config `freeparlor/configs/ppo_l1_o1.toml`
+      （`ppo_p3_stage1.toml` との diff = run パス + 1 行）
+
+## 12. 結果の記録（**完走後に追記する。この追記は凍結違反に当たらない**）
+
+| 項目 | 値 |
+|---|---|
+| run | （発進後に追記） |
+| 発進ゲート | （§4 の PASS/FAIL と staleness の INFO 実測） |
+| 判定1（放銃差 z） | — |
+| 判定2（チップ差 /SE） | — |
+| `Δ放銃_ref`（n=800 実測） | — |
+| 象限 | — |
+| 2 seed 目 | （判定1 ○ のときのみ。S1/S2 の符号を記録） |
