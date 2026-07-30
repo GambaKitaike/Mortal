@@ -372,8 +372,25 @@ staleness の transit 成分（67–70 step = 全体の 74%）を直接叩ける
 
 | 項目 | 値 |
 |---|---|
-| run | （発進後に追記） |
-| 発進ゲート | （§4 の PASS/FAIL と staleness の INFO 実測） |
+| run | **`l1_o1_20260731_012929`**（2026-07-31 01:44 発進、step 100 到達 01:52:47）。発進 preflight: 残党ゼロ / ディスク 902G / libriichi rebuild PASS / **ALL 21 CHECKS PASSED** / 監視6項目ゼロ / 訓練 engine 構成 dump は全介入 0 |
+| 発進ゲート | **PASS**（`analyze_staleness_decomposition.py --gate --gate-window 1 200`）。窓 step [1,200] の**全 199 件**で `trainer_param_version == step // 10 + 1` |
+
+### 12a. §1a の予測の検証（**事前登録した分解が実測で一致した**）
+
+同じ step 窓（101–200）で比較すると:
+
+| | staleness mean | = transit | + 量子化 |
+|---|---:|---:|---:|
+| 参照 4 run（`submit_every=50`） | **99.5** | 75.0 | 24.5 |
+| **O1（`submit_every=10`）** | **79.4** | **74.8** | **4.5** |
+
+- **量子化成分は理論値どおり 24.5 → 4.5**（= (submit_every−1)/2）
+- **transit 成分は 75.0 → 74.8 で不変** — §1a の「transit は `submit_every` では動かない」が
+  **同一窓の実測で確認された**
+- 差は **−20.1 step（−20.2%）**で、§1a の予測 **−21〜22%** と一致する
+
+⇒ **介入は設計どおりの量だけ効いている**（それ以上でも以下でもない）。
+判定（§3）は完走後の eval バッテリーで行う。
 | 判定1（放銃差 z） | — |
 | 判定2（チップ差 /SE） | — |
 | `Δ放銃_ref`（n=800 実測） | — |
