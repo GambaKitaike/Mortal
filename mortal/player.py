@@ -225,6 +225,17 @@ class TrainPlayer:
         self.repeats = cfg['repeats']
         self.repeat_counter = 0
 
+        # 訓練 rollout の乱数系列を記録する（観測のみ・学習には一切影響しない）。
+        # train_key は secrets.randbits(64) = OS エントロピーなので client ごと・run ごとに
+        # 独立で、これが「同一 config の run 間ばらつき」の源。従来どこにも記録されておらず
+        # (a) 2 本の run が別 seed だったことの事後検証も (b) run の再現も不可能だった
+        # （`docs/design/l1_o1_submit_every_design.md` §5a、Gamba 裁定 2026-07-30）。
+        # eval 経路には現れない（TrainPlayer は訓練 client 専用）。
+        logging.info(
+            f'train rollout seeds: profile={profile} train_key=0x{self.train_key:016x} '
+            f'train_seed={self.train_seed} seed_count={self.seed_count} repeats={self.repeats}'
+        )
+
         pool_cfg = config.get('opponent_pool', {})
         self.opponent_pool_enabled = bool(pool_cfg.get('enabled', False))
         self._opp_pool_cfg = pool_cfg
