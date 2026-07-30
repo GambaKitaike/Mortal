@@ -151,11 +151,18 @@ P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「
 - **完了**: anchor 系列は **C（象限 IV・不成立）/ K（象限 III・買ったが払った）で決着**。
   引き戻しは相手分布（pool）より**損失側（KL）に置くほうが効く**ことが単一変数で示された。
   ただし基礎劣化はどちらでも完全には止まらず、ダマ和了の消滅（立直マキシマリズム）も不変
-- **走行中（2026-07-29 15:06 発進・凍結中）**: **`anchor_k_b04_20260729_150631`** —
+- **完走（2026-07-30 15:48）+ eval 中**: **`anchor_k_b04_20260729_150631`** —
   §6a の機械的適用による **kl_beta=0.4 の再走**（Arm K は判定1✗ → β×4。**最大1回・
   これが最後**）。config diff は `ppo_anchor_k.toml` との run パス + `kl_beta` の1行のみ。
-  判定条件は §6 と同一。完走後の手順（完走確認 → eval → **レンズ4 → 判定**）と
-  留保は `session_handover_20260729.md` §3
+  **完走確認済み**: `reached step 16000` の COMPLETED 経路 / diag max=16000 /
+  `step_016000.pth` steps=16000（sha256 5c5147b1…）/ 監視6項目ゼロ（keymiss 0・orphan 0・
+  fallback 0・chip 0・NaN 0・alive 6/3 = 平常）/ 残党ゼロ・port 5000 clear /
+  経過 24.4h（48h 期限内）/ **kl_beta 全 16,000 件 0.4・step0 の kl_ref_mean = 0.0 ちょうど・
+  非有限 0 件**。`kl_ref_mean` は 0 に張り付かず 0.049（step0–2000）→ 0.077（終端）で
+  全期間平均 **0.06895**（Arm K の 0.13048 の約半分 = β の効果が出ている。アンカー過強の
+  兆候なし）。**判定は未起草** — eval バッテリー走行中（`logs/eval_battery_b04.log`）→
+  **レンズ4 → 判定**の順（`session_handover_20260729.md` §3、留保は
+  `anchored_ppo_design.md` §9）
 - **確定（2026-07-29 Gamba 裁定、正は
   `freeparlor/docs/ops/policy_session_0b_decisions_20260729.md`）**: 次の軸は
   **L1（最適化衛生）の O1（submit_every 50→10）→ O3（ppo_epochs 4→1）**。
@@ -163,6 +170,22 @@ P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「
   議題1（立直マキシマリズムの商用採否）は**否決**（条件つき — 鳴き判断と牌理が
   init 水準に戻るまで）、議題2（経済定数変更）は**現行ルールでは行わない**、
   議題4/5 は保留。**申し送りは `session_handover_20260729.md`**
+- **新規（2026-07-30、GPU 不要で並行実施）**: **L1 O1 の事前登録案を起票**
+  （`freeparlor/docs/design/l1_o1_submit_every_design.md`。**DRAFT・§10 の裁定事項5件が
+  Gamba 裁定待ち。裁定後に §11 を埋めた commit が事前登録**）。判定条件は anchor §6 と
+  同一計測器（放銃差 z<2 / チップ +方向 ≥1SE / 1v3 両脚 n=800）にして C/K/b04 と横並び。
+  **測って初めて分かった最重要事実**: staleness 92–94 step は
+  **「量子化 24.5 = (submit_every−1)/2」+「transit 67–70 step」**に厳密分解でき
+  （4 run で量子化が 24.5 に一致）、transit の実体は
+  **client 1 session = 20 半荘（`train_play.clientN.games`）× 3 client の drain キュー**で
+  `submit_every` では動かない。⇒ **O1 の実効は staleness −21〜22% だけ**
+  （lag = param_version 単位で読むと「1/5 になる」と 5 倍の過大評価になる）。
+  スループット影響は実測 +1% 未満（submit 1回 ≈ 0.49–0.63s）。
+  計測器は `analyze_staleness_decomposition.py`（新規・read-only・resume run の base 補正あり）。
+  seed 方針は §5 で「**別 seed = 同一 config・新規 run dir**」（`TrainPlayer.__init__` が
+  `secrets.randbits(64)` で client ごとに `train_key` を引くため訓練は非決定論。
+  一方 eval は決定論）と「**同じ方向 = 主判定の符号一致**（推奨）」を提案。
+  副産物の負債: **`train_key` はどこにもログされていない** = run の完全再現は原理的に不可能
 - **新規（2026-07-28、最大の発見）**: 中間 checkpoint の軌跡測定により
   **損傷もチップ獲得も最初の 2000 step（全体の 12.5%）でほぼ完了**していることが判明
   （`anchor_checkpoint_trajectory_20260728.md`）。残り 14000 step は「維持（K）か
@@ -456,7 +479,10 @@ marginal value は隠れ情報 oracle 層にある、観測用 SP 計算は `age
    壊れにくさを4層に分解し、anchor 系列が L2（参照点）/ L3（相手分布）をカバーする一方
    **L1（最適化衛生）と L4（運用・早期検知）が空白**であることを確定した。
    L1 の一次証拠は `freeparlor/docs/reports/ppo_optimization_health_20260725.md`。
-   実装候補は L1: O1（`submit_every` 引き下げ）→ O3（`ppo_epochs=1` の対照）→
+   実装候補は L1: O1（`submit_every` 引き下げ。**事前登録案は
+   `l1_o1_submit_every_design.md` に分離済み（2026-07-30）。裁定待ち。
+   同書 §1a で「O1 が動かせるのは staleness の量子化成分だけ = 実効 −21〜22%」が確定**）→
+   O3（`ppo_epochs=1` の対照）→
    O2（複数半荘の batch 束ね。**判定窓を step ではなく消費半荘数で定義し直す必要あり**）、
    L2: D2（param group 分離）→ D3（残差方策 `logits = ref_logits + Δ(s)`。**Arm K の
    ref forward 配線を再利用できるので K の後なら配線のみ**）、L4: 訓練 rollout からの

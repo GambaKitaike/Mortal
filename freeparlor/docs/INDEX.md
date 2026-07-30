@@ -1,7 +1,8 @@
 # freeparlor/docs/ 索引
 
 初版: 2026-07-10（design / reports / ops / archive/dqn への再編時）。
-**最終更新: 2026-07-29**（session_handover_20260729 / 初期損傷プローブ結果 / policy_quality_metrics を追加。anchor Arm C/K の判定・レンズ4・checkpoint 軌跡・進路事前登録・
+**最終更新: 2026-07-30**（L1 O1 の事前登録案 `design/l1_o1_submit_every_design.md` を追加）。
+2026-07-29（session_handover_20260729 / 初期損傷プローブ結果 / policy_quality_metrics を追加。anchor Arm C/K の判定・レンズ4・checkpoint 軌跡・進路事前登録・
 セッション申し送りを追加。L1 最適化衛生の診断と「壊れにくい自己学習PPO」設計ノートを追加）。
 日付は文書本文が名乗る日付（= 内容の基準日）。ステータスは判断根拠が明確なもののみ厳密で、
 曖昧なものは本文参照を推奨。
@@ -9,10 +10,11 @@
 - **active** = 現在も参照される生きた文書 / **frozen** = 事前登録により変更禁止（run 進行中）
 - **closed** = 役目を終えた（判定完了・タスク消化済み） / **DRAFT** = 未凍結・裁定前
 
-## design/ — 設計・pre-registration（10本）
+## design/ — 設計・pre-registration（11本）
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
+| `design/l1_o1_submit_every_design.md` | 2026-07-30 | **事前登録案（DRAFT・裁定待ち）** | **次の軸**（0b 裁定 §2 の L1 O1）。単一変数 = `[control] submit_every 50→10`（config 1行・学習コード無変更）。**新規実測で O1 の効果に上限が付いた**: staleness 92–94 step は「量子化 24.5 = (submit_every−1)/2」+「transit 67–70（client 1 session = 20 半荘 × 3 client のキュー）」に分解され、**submit_every が動かせるのは量子化成分だけ = 実効 −21〜22%**（lag 単位で読むと 5 倍の過大評価になる）。スループット影響は +1% 未満。判定条件は anchor §6 と同一計測器（放銃差 z<2 / チップ +方向 ≥1SE / 1v3 両脚 n=800）。**0b §1 の seed 方針が最初に適用される実験**で、§5 が「別 seed」（= 同一 config・新規 run dir。`train_key` は `secrets.randbits(64)` で run ごとに独立）と「同じ方向」（推奨 = 主判定の符号一致）の操作的定義を提案。裁定事項は §10（5件）。 |
 | `design/anchored_ppo_design.md` | 2026-07-25 | **frozen（進行中）** | **現行軸**。アンカー付きPPO（基礎劣化対策）の単一変数2 arm — C（opponent pool へ凍結init を anchor_prob=0.25 で常駐）/ K（`ppo_loss` に masked full KL、kl_beta=0.1）。凍結commit 847dc8d が事前登録。判定条件は §6、K の再走規定は §6a、発進ゲートは §5-a1 amendment 済み。 |
 | `design/early_damage_probe_design.md` | 2026-07-28（07-29 §4a amendment） | **事前登録（診断・判定非関与・完走済み）** | step 0–2000 の内部形状を測る短 run（2000 step ≈ 3.1h）。軌跡測定が残した唯一の宿題（この区間に checkpoint が無い）を埋める。**単一変数 = 観測専用の `diag_save_every`**。`save_every` を下げる素朴案は `OpponentPool` の glob 対象を変えて2変数になるため不可（§2a）。判定条件は置かない。**発進・完走済み**（`early_probe_20260728_202533`）→ 結果は `reports/early_damage_probe_result_20260729.md`。§4a は測定点終端を 2000→1900 に変える amendment（完走時の cleanup が step_002000.pth を切り詰めたため）。 |
 | `design/ppo_migration_design.md` | 2026-07-02 | active | PPO移行の設計正典。教師データ非依存本線の実装設計（critic scale・希少性探索の分岐を含む）。 |
