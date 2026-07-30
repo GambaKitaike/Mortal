@@ -1,8 +1,10 @@
 # freeparlor/docs/ 索引
 
 初版: 2026-07-10（design / reports / ops / archive/dqn への再編時）。
-**最終更新: 2026-07-31**（b04 のレンズ4 `reports/qualitative_review_anchor_k_b04_20260731.md` と
-西入の設計ノート `design/parlor_rule_west_round_design.md` を追加）。
+**最終更新: 2026-07-31**（**anchor 系列 閉幕** — 総括 `reports/anchor_series_summary_20260731.md` と
+b04 判定 `reports/anchor_k_b04_result.md` を追加、`design/anchored_ppo_design.md` を closed へ。
+b04 のレンズ4 `reports/qualitative_review_anchor_k_b04_20260731.md` と
+西入の設計ノート `design/parlor_rule_west_round_design.md`（裁定 W1+S1）を追加）。
 2026-07-30（L1 O1 の事前登録 `design/l1_o1_submit_every_design.md` と
 Arm K 再走 kl_beta=0.4 の測定記録 `reports/anchor_k_b04_measurements_20260730.md` を追加）。
 2026-07-29（session_handover_20260729 / 初期損傷プローブ結果 / policy_quality_metrics を追加。anchor Arm C/K の判定・レンズ4・checkpoint 軌跡・進路事前登録・
@@ -18,8 +20,8 @@ Arm K 再走 kl_beta=0.4 の測定記録 `reports/anchor_k_b04_measurements_2026
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
 | `design/l1_o1_submit_every_design.md` | 2026-07-30 | **frozen（事前登録・発進待ち）** | **次の軸**（0b 裁定 §2 の L1 O1）。単一変数 = `[control] submit_every 50→10`（config 1行・学習コード無変更）。**新規実測で O1 の効果に上限が付いた**: staleness 92–94 step は「量子化 24.5 = (submit_every−1)/2」+「transit 67–70（client 1 session = 20 半荘 × 3 client のキュー）」に分解され、**submit_every が動かせるのは量子化成分だけ = 実効 −21〜22%**（lag 単位で読むと 5 倍の過大評価になる）。スループット影響は +1% 未満。判定条件は anchor §6 と同一計測器（放銃差 z<2 / チップ +方向 ≥1SE / 1v3 両脚 n=800）。**0b §1 の seed 方針が最初に適用される実験**で、§5 が「別 seed」（= 同一 config・新規 run dir。`train_key` は `secrets.randbits(64)` で run ごとに独立）と「同じ方向」（= 主判定の符号一致・有意性は問わない）の操作的定義を凍結。**Gamba 裁定（§10、5件）**: baseline は plain PPO / 参照脚の n=800 再測は O1 の eval に同梱 / `train_key` ログは入れる / 4・5 は確定 / **transit を叩く O6（`games` 20→5）は保留（§10a に保全）**。凍結記録は §11、結果は §12 へ追記。 |
-| `design/parlor_rule_west_round_design.md` | 2026-07-31 | **DRAFT・裁定待ち・実装未着手** | **libriichi が天鳳準拠で西入（サドンデス）を実装している**一方、フリー雀荘ルールでは通常採用しないという不一致（2026-07-30 レンズ4 の副産物）。実測: 西入は **3.38%（init）/ 3.62%（b04）の半荘**で発生し、そのうち **48–74% で順位点が変わる**（全半荘の 1.75–2.50%）。challenger の3ストリームへの寄与は全半荘平均で 順位点 −0.013（init）/ **−0.113（b04）**、チップ −0.001/−0.005 枚 ⇒ **現行の凍結済み判定はどれも動かない**（最大でも順位点で 1SE の 8%）。ただし事後集計なので**オーラスの意思決定変化は含まない**。選択肢は W1 config フラグ化（既定=現状でビット不変・**推奨**）/ W2 ハード変更 / W3 据え置き、実施順は S1（O1 を先に走らせる・**推奨**）/ S2 / S3。**O1 は西入ありで訓練された Stage1-16000 を baseline に凍結済みなので、O1 前にルールを変えると2変数になる**。 |
-| `design/anchored_ppo_design.md` | 2026-07-25 | **frozen（進行中）** | **現行軸**。アンカー付きPPO（基礎劣化対策）の単一変数2 arm — C（opponent pool へ凍結init を anchor_prob=0.25 で常駐）/ K（`ppo_loss` に masked full KL、kl_beta=0.1）。凍結commit 847dc8d が事前登録。判定条件は §6、K の再走規定は §6a、発進ゲートは §5-a1 amendment 済み。 |
+| `design/parlor_rule_west_round_design.md` | 2026-07-31 | **裁定済み（W1+S1）・実装は O1 後** | **libriichi が天鳳準拠で西入（サドンデス）を実装している**一方、フリー雀荘ルールでは通常採用しないという不一致（2026-07-30 レンズ4 の副産物）。実測: 西入は **3.38%（init）/ 3.62%（b04）の半荘**で発生し、そのうち **48–74% で順位点が変わる**（全半荘の 1.75–2.50%）。challenger の3ストリームへの寄与は全半荘平均で 順位点 −0.013（init）/ **−0.113（b04）**、チップ −0.001/−0.005 枚 ⇒ **現行の凍結済み判定はどれも動かない**（最大でも順位点で 1SE の 8%）。ただし事後集計なので**オーラスの意思決定変化は含まない**。選択肢は W1 config フラグ化（既定=現状でビット不変・**推奨**）/ W2 ハード変更 / W3 据え置き、実施順は S1（O1 を先に走らせる・**推奨**）/ S2 / S3。**O1 は西入ありで訓練された Stage1-16000 を baseline に凍結済みなので、O1 前にルールを変えると2変数になる**。 |
+| `design/anchored_ppo_design.md` | 2026-07-25（07-31 §9 に結果追記・閉幕） | **closed（凍結のまま）** | **現行軸**。アンカー付きPPO（基礎劣化対策）の単一変数2 arm — C（opponent pool へ凍結init を anchor_prob=0.25 で常駐）/ K（`ppo_loss` に masked full KL、kl_beta=0.1）。凍結commit 847dc8d が事前登録。判定条件は §6、K の再走規定は §6a、発進ゲートは §5-a1 amendment 済み。 |
 | `design/early_damage_probe_design.md` | 2026-07-28（07-29 §4a amendment） | **事前登録（診断・判定非関与・完走済み）** | step 0–2000 の内部形状を測る短 run（2000 step ≈ 3.1h）。軌跡測定が残した唯一の宿題（この区間に checkpoint が無い）を埋める。**単一変数 = 観測専用の `diag_save_every`**。`save_every` を下げる素朴案は `OpponentPool` の glob 対象を変えて2変数になるため不可（§2a）。判定条件は置かない。**発進・完走済み**（`early_probe_20260728_202533`）→ 結果は `reports/early_damage_probe_result_20260729.md`。§4a は測定点終端を 2000→1900 に変える amendment（完走時の cleanup が step_002000.pth を切り詰めたため）。 |
 | `design/ppo_migration_design.md` | 2026-07-02 | active | PPO移行の設計正典。教師データ非依存本線の実装設計（critic scale・希少性探索の分岐を含む）。 |
 | `design/reward_design_teacherfree.md` | 2026-07-01 | active | 教師データ非依存の報酬設計（あ）確定版。reward_audit を受けた本線設計。 |
@@ -31,7 +33,7 @@ Arm K 再走 kl_beta=0.4 の測定記録 `reports/anchor_k_b04_measurements_2026
 | `design/robust_selfplay_ppo_design.md` | 2026-07-25（07-28 改訂） | DRAFT | 「壊れにくい自己学習PPO」の設計ノート。壊れにくさを4層（L1最適化衛生 / L2参照点 / L3相手分布 / L4運用）に分解し、anchor系列がL2/L3をカバーする一方 **L1とL4が空白**であることを確定。L1の一次証拠は `reports/ppo_optimization_health_20260725.md`。L2「差分だけ学習」の案D1–D4（推奨D3=残差方策、ArmK の ref配線を再利用）、L4 トリップワイヤ、§5 アンカー置換可能性（0b議題5）。**§5b/§5c（07-28 追記）: anchor 系列は商用化で無駄にならない（機構の知見と配管は持ち越せる／アンカーは config パス指定で差し替え可能）が、K の部分的保護は「強い人間譜由来の参照点」で得たものであり、牌譜非依存アンカーで同等以上が出るかは別の実験＝16k run 1本の未計上コスト**。**裁定非関与・実装未承認・判定条件は書かない**。 |
 | `design/reward_audit_teacherfree.md` | 2026-07-01 | closed | `RewardCalculator.calc_delta_blend` の棚卸し（教師データ非依存化に向けた監査、reward_design の前段）。 |
 
-## reports/ — 判定結果・run記録・診断（21本）
+## reports/ — 判定結果・run記録・診断（23本）
 
 > **移動時の制約（2026-07-25 追記）:** `ppo_p1_verify_log.txt` は `verify_ppo_p1.py` が
 > 出力先をハードコードしているため移動不可。`fundamentals_degradation_diagnosis_20260725.md` と
@@ -43,6 +45,8 @@ Arm K 再走 kl_beta=0.4 の測定記録 `reports/anchor_k_b04_measurements_2026
 
 | パス | 日付 | ステータス | 要約 |
 |---|---|---|---|
+| `reports/anchor_series_summary_20260731.md` | 2026-07-31 | **系列の総括（閉幕）** | **anchor 系列 3本（C / K / b04）の横断総括。Gamba 裁定で系列をここで閉じる。** 判定1（基礎維持）は**3 arm すべて不成立**、判定2（経済適応）は KL 側2 arm で成立（K +2.18SE / b04 +1.75SE、pool 側 C は +0.45SE）。**引き戻しは pool より損失側（KL）が効く**を単一変数で確定。β を 0.1→0.4 にしても象限は動かず（`kl_ref_mean` は半減しており β 自体は効いている）。**中心的知見: 基礎技能は悪化したが EV は上昇した** — 放銃 +1.15〜1.31pp（有意）・和了 −1.0〜−1.2pp なのに avg_rank は不変で、チップ +0.4〜0.5枚/半荘（+2.0〜2.5千点相当）、合算の点推定 +3.4〜+3.8千点/半荘。⇒ **チップありのルールでは基礎技能だけで AI の性能を説明できない**。**留保4件**（相手は init 1種で搾取可能性は未検証 = 0b 議題3 が検定になる / 合算は 1.2〜1.4SE で有意水準未達 / EV 上昇は plain PPO 由来でアンカーが作ったものではない / 商用採否は 0b 議題1 で否決のまま）。 |
+| `reports/anchor_k_b04_result.md` | 2026-07-31 | closed | **b04（kl_beta=0.4）判定** = §6a の機械的再走の結果。**象限 III（判定1✗ 放銃 z=+2.21 / 判定2○ チップ +1.75SE）で Arm K と同じ**。β×4 は判定を動かさず（変化幅は run 間ばらつき未満）、§6a の再走枠は使い切った。得たもの（ダマ和了が消滅しない・向聴を外した率が init より有意に改善・放銃打点が軽い）と失ったもの（加カン消滅・切り順の一貫性劣化）を分けて記録。 |
 | `reports/anchor_k_b04_measurements_20260730.md` | 2026-07-30 | **測定記録（判定未起草・レンズ4 待ち）** | **Arm K 再走（kl_beta=0.4、§6a の機械的適用・最後の再走）の eval 測定記録**。完走確認（COMPLETED 経路 / sha256 照合 / 監視6項目ゼロ / kl_beta 全 0.4・step0=0.0・全期間平均 0.06895 = K の約半分）+ 判定の測定器（放銃 +1.150pp **z=+2.21** / チップ +0.405 **+1.75SE** ⇒ **機械的には象限 III**）+ 3 arm 横並び。**β×4 は判定を動かさなかった**（変化幅は run 間ばらつきより小さい）。**C/K と違う像**: ダマ和了が消滅していない（12.41% vs C 0.82% / K 0.80%）= 立直マキシマリズムが初めて部分的に停止、打点は層内でも有意（立直和了 +540 z=+2.74 / ダマ −1253 z=−5.07）。**失った資産**: 加カン消滅・切り順の一貫性劣化（z=+2.27、K は n.s.）。判定は `qualitative_review_protocol.md` に従いレンズ4 の後に別途起草する。 |
 | `reports/qualitative_review_anchor_k_b04_20260731.md` | 2026-07-31 | exploratory（判定非関与） | **b04 のレンズ4**（Gamba・自己対戦1半荘）。所見15件を全件、定量指標に突き合わせた。**チーテン・ポンテン取らず（3件）→ 有役テンパイ機会の見送り 91.16%（z=+5.88）と一致**、**牌効率のミス（3件）→ 受け入れで支配された率 z=+4.14 と一致**（向聴を外した率の改善 z=−3.25 とは矛盾しない — 0.45件/半荘なので1半荘で1件見つかるのは統計と整合）。**最大の収穫: ダマ和了の復活（12.41%）は改善ではない** — 該当2件は「リーチすべき場面」と評価され、ダマ和了の打点も −1253点（z=−5.07）。**新規実装した暗刻からのポン率**（`analyze_ankou_pon.py`）で所見「暗刻から南ポン・直らないねこれ」を測定 → init 0.97% / b04 1.86%（z=+1.83 n.s.）＝ **init から継承した欠陥で PPO では直らない**（4枚目は 20/20 で同じ局に切っている）。起票7件（無役鳴き率 / 見送りの打点重み付け / 立直ダマ選択の質 ほか）。 |
 | `reports/fundamentals_degradation_diagnosis_20260725.md` | 2026-07-25 | active | 「PPOが与えられた基礎（牌理・降り）を壊している」の診断。anchor系列の動機。 |
