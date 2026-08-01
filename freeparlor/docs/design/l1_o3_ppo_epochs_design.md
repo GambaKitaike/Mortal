@@ -248,5 +248,13 @@ argmax 6ckpt + grp_baseline 1v3 n=800 両脚 + 基礎技能有意性 + ミラー
 
 | 項目 | 値 |
 |---|---|
-| run | （発進後に追記） |
-| 発進ゲート | （§4 の PASS/FAIL） |
+| run | **`l1_o3_20260801_150024`**（2026-08-01 15:00 発進、step 100 到達 15:19、step 200 到達 15:24）。発進 preflight: 残党ゼロ / ディスク 543G / libriichi rebuild PASS / **ALL 21 CHECKS PASSED** / 監視6項目ゼロ / 訓練 engine 構成 dump は介入4種すべて 0 |
+| 発進ゲート | **PASS**（`gate_l1_o3_epochs.py --gate-window 1 200`）。窓内 **200 件すべてが `epoch == 1`**、かつ 1 step あたり 1 レコード（distinct step=200）。INFO: clip@epoch1 mean=0.1715 / ratio_mean=0.9998 / ratio_std=0.1919 |
+
+`train_key`（再現用の記録）: client0=`0x9732e439d7d598fd` / client1=`0x8256e91e508861b4` /
+client2=`0x5ac58a2ef49490f8`。
+
+**副産物の確認**: `train_ppo.py:599` の書式は `epoch1_clip=` と `epoch{ppo_epochs}_clip=` を
+並べるため、`ppo_epochs=1` では **`epoch1_clip=... epoch1_clip=...` と同じラベルが2回出る**
+（同一 epoch を指す）。介入が効いていることの副次的な裏付け。ログの体裁は変更しない
+（凍結中の run にコード変更を入れない）。
