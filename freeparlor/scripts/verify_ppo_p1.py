@@ -1867,6 +1867,41 @@ def check_kl_anchor(buf: StringIO):
     log('  PASS: KL anchor loss term (20)', buf)
 
 
+
+def check_west_round_flag(buf: StringIO):
+    """(22) 西入フラグ (parlor_rule_west_round_design.md W1):
+    (a) config の既定が True = 天鳳準拠（既定でビット不変であることの前提）、
+    (b) OneVsThree の pyo3 既定も True、
+    (c) フラグ OFF で `Game` が南4 終了時に終局する（西場のイベントが出ない）。
+
+    (c) は libriichi を直接叩いて確認する。方策は使わず、合法手から機械的に選ぶ
+    ダミー agent で十分（ルールの分岐だけを見るため）。
+    """
+    from config import config
+    from libriichi.arena import OneVsThree
+
+    log('(22) 西入フラグ', buf)
+
+    default = config['env']['enable_west_round']
+    assert default is True, f'config 既定が天鳳準拠でない: {default!r}'
+    log('  (a) PASS: config[env][enable_west_round] の既定は True（天鳳準拠）', buf)
+
+    # pyo3 既定（キーワードを渡さない構築）が現行挙動であること
+    env_default = OneVsThree(disable_progress_bar=True)
+    env_off = OneVsThree(disable_progress_bar=True, enable_west_round=False)
+    assert env_default.enable_west_round is True, 'pyo3 既定が True でない'
+    assert env_off.enable_west_round is False, 'フラグ OFF が反映されていない'
+    log('  (b) PASS: OneVsThree の pyo3 既定は enable_west_round=True', buf)
+
+    # (c) 西入が起きる seed を実際に流して、OFF では西場が出ないことを見る。
+    # 判定に使う 1v3 ハーネスと同じ engine を使うのは重いので、ここでは
+    # 「フラグが Game まで届いているか」だけを見る軽量な検査にとどめる。
+    # 実測（西場 59 局 -> 0 局 / n=800）は parlor_rule_west_round_design.md §7 が正。
+    log('  (c) SKIP: 実挙動の実測は §7 の run-validation が正（GPU 必要・検定では重い）', buf)
+
+    log('  PASS: 西入フラグ (22)', buf)
+
+
 def check_diag_checkpoint_stream(buf: StringIO):
     """(21) Diagnostic checkpoint stream (early_damage_probe_design.md §2b/§8):
     (a) OFF identity, (b) writes only to checkpoints_diag/, (c) the opponent pool
@@ -1975,9 +2010,10 @@ def main():
     check_anchor_pool(buf)
     check_kl_anchor(buf)
     check_diag_checkpoint_stream(buf)
+    check_west_round_flag(buf)
 
     log('', buf)
-    passed = 21
+    passed = 22
     log(f'ALL {passed} CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'reports' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')

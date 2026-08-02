@@ -85,6 +85,7 @@ class TestPlayer:
         env = OneVsThree(
             disable_progress_bar = False,
             log_dir = self.log_dir,
+            enable_west_round = config['env']['enable_west_round'],
         )
         champion = engine_chal if self.self_play else self.baseline_engine
         env.py_vs_py(
@@ -162,6 +163,7 @@ class TestPlayer:
         env = OneVsThree(
             disable_progress_bar=False,
             log_dir=self.log_dir,
+            enable_west_round=config['env']['enable_west_round'],
         )
         if self.self_play:
             # challenger/champion は別インスタンス必須（arena 並列が同一 engine を叩く）
@@ -317,6 +319,7 @@ class TrainPlayer:
         env = OneVsThree(
             disable_progress_bar = False,
             log_dir = self.log_dir,
+            enable_west_round = config['env']['enable_west_round'],
         )
         rankings = env.py_vs_py(
             challenger = engine_chal,
@@ -345,6 +348,7 @@ class TrainPlayer:
         env = OneVsThree(
             disable_progress_bar = False,
             log_dir = self.log_dir,
+            enable_west_round = config['env']['enable_west_round'],
         )
         rankings = env.py_vs_py(
             challenger = engine,

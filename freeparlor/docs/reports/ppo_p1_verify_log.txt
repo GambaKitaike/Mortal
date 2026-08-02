@@ -1,4 +1,4 @@
-PPO P1 sanity verification (re-run 2026-08-02T18:50:52+09:00)
+PPO P1 sanity verification (re-run 2026-08-02T21:19:26+09:00)
 checkpoint: /home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth
 online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 
@@ -17,7 +17,7 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
 (6) legacy checkpoint load after chip head removal
   PASS: strict=False ignores chip_net; ActorCritic loads main heads
 (7) pure π sampling
-  TV distance=0.01288, illegal=0
+  TV distance=0.00100, illegal=0
   PASS: samples match softmax(masked logits), no illegal actions
 (8) online chip from log
   player_id=0 n_kyoku=8 nonzero_kyoku=3 sum=-5.0
@@ -49,7 +49,7 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
   trainee config dump diff=empty: {'name': 'trainee', 'engine_type': 'mortal', 'enable_amp': True, 'enable_quick_eval': False, 'enable_rule_based_agari_guard': False, 'eval_mode': False, 'record_trajectory': True, 'tau': 1.0, 'has_pending_steps': True, 'p_enrich': 0.0, 'call_bonus_b': 0.0, 'anchor_prob': 0.0, 'anchor_checkpoint': '', 'kl_beta': 0.0}
   stub forced action 42 at least once (hit on torch_seed=0)
   daiminkan game=1_48879_b count=1 trainee_seat=1
-  trajectory_steps=175 action42_present=True
+  trajectory_steps=188 action42_present=True
   PASS: daiminkan direct path (15)
 (16) optimizer state resume (save → load → 1 step)
   real ckpt: step_010000.pth params=411 changed=411
@@ -85,5 +85,10 @@ online log: /home/gamba/mahjong/runs_archive_0620/test_play/10299_8192_d.json.gz
   (c) PASS: OpponentPool never globs or samples checkpoints_diag/
   (d) PASS: diag_save_every defaults to 0, guard short-circuits, save_checkpoint() untouched
   PASS: diagnostic checkpoint stream (21)
+(22) 西入フラグ
+  (a) PASS: config[env][enable_west_round] の既定は True（天鳳準拠）
+  (b) PASS: OneVsThree の pyo3 既定は enable_west_round=True
+  (c) SKIP: 実挙動の実測は §7 の run-validation が正（GPU 必要・検定では重い）
+  PASS: 西入フラグ (22)
 
-ALL 21 CHECKS PASSED
+ALL 22 CHECKS PASSED
