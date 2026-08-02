@@ -251,6 +251,21 @@ argmax 6ckpt + grp_baseline 1v3 n=800 両脚 + 基礎技能有意性 + ミラー
 | run | **`l1_o3_20260801_150024`**（2026-08-01 15:00 発進、step 100 到達 15:19、step 200 到達 15:24）。発進 preflight: 残党ゼロ / ディスク 543G / libriichi rebuild PASS / **ALL 21 CHECKS PASSED** / 監視6項目ゼロ / 訓練 engine 構成 dump は介入4種すべて 0 |
 | 発進ゲート | **PASS**（`gate_l1_o3_epochs.py --gate-window 1 200`）。窓内 **200 件すべてが `epoch == 1`**、かつ 1 step あたり 1 レコード（distinct step=200）。INFO: clip@epoch1 mean=0.1715 / ratio_mean=0.9998 / ratio_std=0.1919 |
 
+### 12a. 完走と eval（2026-08-02）
+
+**数値は `../reports/l1_o3_result_20260802.md` が正**（判定は未起草。レンズ4 の後）。
+
+- 完走: 08-01 15:00 → 08-02 15:23（**24.4h**・16000 step・`exit=0`・監視6項目ゼロ）
+- **判定1（放銃 z<2）: z = +3.13**（+1.620pp）
+- **判定2（チップ +方向 ≥1SE）: +0.639 枚/半荘 = +2.77SE**（全ストリーム + 方向、
+  **合算は init を上回った** +5.237 / +1.89SE）
+- **§3a の識別指標: 交絡は支配していない**（立直シフト 88.5% / 副露シフト 71.9%、
+  いずれも参照の 1/2 を大きく超える）
+- baseline 比: Δ_O3 − Δ_ref = **−1.256pp（−1.70 z）**
+- 機構: staleness は 90.7 で base と同じ（`submit_every` 不変）のに
+  **clip@epoch1 が 0.2019→0.0521（−75%）** — O1（staleness −21% で clip 不変）と対照的
+- §1c の予測（wall clock は client 律速なので短縮しない）は的中（24.4h）
+
 `train_key`（再現用の記録）: client0=`0x9732e439d7d598fd` / client1=`0x8256e91e508861b4` /
 client2=`0x5ac58a2ef49490f8`。
 
