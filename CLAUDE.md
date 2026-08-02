@@ -7,7 +7,8 @@ Mortal をフリー雀荘ルール（素点+ウマオカ+チップ、β=1）向�
 DRCA プローブで反鳴き均衡が経済の性質であることを確認。**anchor 系列（アンカー付き PPO、
 基礎技能劣化への対策）も 2026-07-31 に閉幕**（総括は
 `freeparlor/docs/reports/anchor_series_summary_20260731.md`）。
-現在の優先軸は **L1（最適化衛生）の O1 → O3**（0b 裁定）。
+**L1（最適化衛生）系列（O1 / O3）も 2026-08-02 に閉幕**（総括は
+`freeparlor/docs/reports/l1_series_summary_20260802.md`）。次の軸は Gamba 裁定待ち。
 
 **最初に読む文書（この順で）:**
 1. `freeparlor/docs/design/ppo_migration_design.md` — PPO 移行の設計正典
@@ -154,34 +155,25 @@ P2 期の改修で emitter が消えた）ため構造的に常に 0 で、**「
 - **閉幕（2026-07-31、Gamba 裁定）**: **anchor 系列は3 arm すべてで判定1（基礎維持）が
   不成立で終了**。総括は `freeparlor/docs/reports/anchor_series_summary_20260731.md`、
   詳細は本節下部「閉幕: anchor 系列」。**中心的知見: 基礎技能は悪化したが EV は上昇した**
-- **現在の優先軸**: **L1 O1（`submit_every` 50→10）の発進**。事前登録は凍結済み
-  （`l1_o1_submit_every_design.md`）、実装もブランチ `l1-o1-submit-every` に済み。
-  **発進 preflight（残党チェック + libriichi rebuild + 検定全数）から再開する**
-- **確定（2026-07-29 Gamba 裁定、正は
-  `freeparlor/docs/ops/policy_session_0b_decisions_20260729.md`）**: 次の軸は
-  **L1（最適化衛生）の O1（submit_every 50→10）→ O3（ppo_epochs 4→1）**。
-  その後 **候補2（敵対的搾取者訓練）→ 候補1（oracle 蒸留）** の順。
-  議題1（立直マキシマリズムの商用採否）は**否決**（条件つき — 鳴き判断と牌理が
-  init 水準に戻るまで）、議題2（経済定数変更）は**現行ルールでは行わない**、
-  議題4/5 は保留。**申し送りは `session_handover_20260729.md`**
-- **新規（2026-07-30、GPU 不要で並行実施）**: **L1 O1 を事前登録・凍結**
-  （`freeparlor/docs/design/l1_o1_submit_every_design.md`。**§10 の裁定5件は Gamba 回答済み
-  = baseline は plain PPO / 参照脚 n=800 再測は O1 の eval に同梱 / `train_key` ログは入れる /
-  「同じ方向」= 主判定の符号一致 / 2 seed 目は判定1 ○ のときのみ。§11 が凍結記録、
-  結果は §12 へ追記**）。判定条件は anchor §6 と
-  同一計測器（放銃差 z<2 / チップ +方向 ≥1SE / 1v3 両脚 n=800）にして C/K/b04 と横並び。
-  **測って初めて分かった最重要事実**: staleness 92–94 step は
-  **「量子化 24.5 = (submit_every−1)/2」+「transit 67–70 step」**に厳密分解でき
-  （4 run で量子化が 24.5 に一致）、transit の実体は
-  **client 1 session = 20 半荘（`train_play.clientN.games`）× 3 client の drain キュー**で
-  `submit_every` では動かない。⇒ **O1 の実効は staleness −21〜22% だけ**
-  （lag = param_version 単位で読むと「1/5 になる」と 5 倍の過大評価になる）。
-  スループット影響は実測 +1% 未満（submit 1回 ≈ 0.49–0.63s）。
-  計測器は `analyze_staleness_decomposition.py`（新規・read-only・resume run の base 補正あり）。
-  seed 方針は §5 で「**別 seed = 同一 config・新規 run dir**」（`TrainPlayer.__init__` が
-  `secrets.randbits(64)` で client ごとに `train_key` を引くため訓練は非決定論。
-  一方 eval は決定論）と「**同じ方向 = 主判定の符号一致**（推奨）」を提案。
-  副産物の負債: **`train_key` はどこにもログされていない** = run の完全再現は原理的に不可能
+- **閉幕（2026-08-02、Gamba 裁定）**: **L1（最適化衛生）系列は O1 / O3 とも判定1（基礎維持）が
+  不成立で終了**。総括は `freeparlor/docs/reports/l1_series_summary_20260802.md`。
+  **判定2（経済）は両 arm で成立**し、とくに **O3（`ppo_epochs` 4→1）は
+  放銃劣化が系列最小（+1.620pp, z=+3.13）・チップが系列最大（+0.639 枚/半荘, +2.77SE）・
+  合算 +5.237 千点/半荘で init を上回った**（全ストリーム + 方向は本プロジェクト初）。
+  事前登録の識別指標（§3a）により「単に学習が進んでいないだけ」は否定済み。
+  **中心的知見: clip_fraction を支配していたのは staleness ではなく
+  「staleness 窓の間に経過した optimizer 更新数」**（O1 は staleness −21% で clip 不変、
+  O3 は staleness 不変で clip −75%）。レンズ4 は
+  `qualitative_review_l1_o3_20260802.md`（鳴き判断・降りの規律は init 水準に戻っていない。
+  0b 議題1 の否決条件は未充足）
+- **現在の優先軸**: **未確定（次の軸の順序は Gamba 裁定待ち）**。候補は
+  (a) **W1 + S1（西入の除去）** — 2026-07-31 裁定の「L1 O1 を現行ルールで走らせた後」
+  という条件は満たされた。ルール変更なので後回しにするほど比較対象が積み上がる /
+  (b) **候補2（敵対的搾取者訓練）** — 0b 裁定 §2 の順序上は次 /
+  (c) レンズ4 起票の計装3件（GPU 不要）。詳細は総括 §7
+- **裁定待ち（総括 §6）**: **`ppo_epochs=1` を以後の既定にするか**。
+  O3 は同じ計算資源でより良い方策に見えるが判定1 は不成立で、
+  0b §1 の逐次スクリーニング規律では既定化に 2 seed 目が要る
 - **新規（2026-07-28、最大の発見）**: 中間 checkpoint の軌跡測定により
   **損傷もチップ獲得も最初の 2000 step（全体の 12.5%）でほぼ完了**していることが判明
   （`anchor_checkpoint_trajectory_20260728.md`）。残り 14000 step は「維持（K）か
@@ -410,6 +402,9 @@ marginal value は隠れ情報 oracle 層にある、観測用 SP 計算は `age
    **W1 = config フラグ化・既定は現状（西入あり）でビット不変**、
    **S1 = L1 O1 を現行ルールで走らせた後に実装**（O1 の baseline は西入ありで訓練された
    Stage1-16000 なので、先に変えると2変数になる）。
+   **⇒ この条件は 2026-08-02 に充足**（O1 / O3 とも現行ルールで完走・判定済み）。
+   S1 を先送りするほど「西入あり」で測った比較対象が積み上がるので、
+   次の軸の順序決定に含めること（総括 §7）。
    実測: 西入は半荘の 3.38–3.62% で発生し、うち 48–74% で順位点が変わるが、
    全半荘に均した寄与は順位点 −0.013〜−0.113 で**現行の凍結済み判定はどれも動かない**。
    実装時に決める残件は同書 §6（オーラス親の連荘条件の細部 / 他のルール差の体系的棚卸し）
@@ -449,10 +444,10 @@ marginal value は隠れ情報 oracle 層にある、観測用 SP 計算は `age
    壊れにくさを4層に分解し、anchor 系列が L2（参照点）/ L3（相手分布）をカバーする一方
    **L1（最適化衛生）と L4（運用・早期検知）が空白**であることを確定した。
    L1 の一次証拠は `freeparlor/docs/reports/ppo_optimization_health_20260725.md`。
-   実装候補は L1: O1（`submit_every` 引き下げ。**事前登録案は
-   `l1_o1_submit_every_design.md` に分離済み（2026-07-30）。裁定待ち。
-   同書 §1a で「O1 が動かせるのは staleness の量子化成分だけ = 実効 −21〜22%」が確定**）→
-   O3（`ppo_epochs=1` の対照）→
+   **L1 は 2026-08-02 に閉幕**（O1 / O3 とも実施済み。総括
+   `freeparlor/docs/reports/l1_series_summary_20260802.md`）。残りは
+   O2（複数半荘の batch 束ね。**判定窓を step ではなく消費半荘数で定義し直す必要あり** —
+   別設計としてバックログに残す）→
    O2（複数半荘の batch 束ね。**判定窓を step ではなく消費半荘数で定義し直す必要あり**）、
    L2: D2（param group 分離）→ D3（残差方策 `logits = ref_logits + Δ(s)`。**Arm K の
    ref forward 配線を再利用できるので K の後なら配線のみ**）、L4: 訓練 rollout からの

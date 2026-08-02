@@ -894,3 +894,38 @@ Stage3 判定完了（`ppo_p3_stage3_result.md` §9、探索ラダー閉幕）�
   「C=IV かつ K=III」を明示的に扱っていないため、**次の軸の選択は 0b の裁定事項**
   （post-hoc に進路を作らない）
 
+
+
+## 付録: L1 系列の進行中エントリ（2026-08-02 に CLAUDE.md から不改変で移設）
+
+> L1 は 2026-08-02 に閉幕（総括 `../reports/l1_series_summary_20260802.md`）。
+> 以下は閉幕前の「現在の状態」節の記載を不改変で残したもの。
+
+- **現在の優先軸**: **L1 O1（`submit_every` 50→10）の発進**。事前登録は凍結済み
+  （`l1_o1_submit_every_design.md`）、実装もブランチ `l1-o1-submit-every` に済み。
+  **発進 preflight（残党チェック + libriichi rebuild + 検定全数）から再開する**
+- **確定（2026-07-29 Gamba 裁定、正は
+  `freeparlor/docs/ops/policy_session_0b_decisions_20260729.md`）**: 次の軸は
+  **L1（最適化衛生）の O1（submit_every 50→10）→ O3（ppo_epochs 4→1）**。
+  その後 **候補2（敵対的搾取者訓練）→ 候補1（oracle 蒸留）** の順。
+  議題1（立直マキシマリズムの商用採否）は**否決**（条件つき — 鳴き判断と牌理が
+  init 水準に戻るまで）、議題2（経済定数変更）は**現行ルールでは行わない**、
+  議題4/5 は保留。**申し送りは `session_handover_20260729.md`**
+- **新規（2026-07-30、GPU 不要で並行実施）**: **L1 O1 を事前登録・凍結**
+  （`freeparlor/docs/design/l1_o1_submit_every_design.md`。**§10 の裁定5件は Gamba 回答済み
+  = baseline は plain PPO / 参照脚 n=800 再測は O1 の eval に同梱 / `train_key` ログは入れる /
+  「同じ方向」= 主判定の符号一致 / 2 seed 目は判定1 ○ のときのみ。§11 が凍結記録、
+  結果は §12 へ追記**）。判定条件は anchor §6 と
+  同一計測器（放銃差 z<2 / チップ +方向 ≥1SE / 1v3 両脚 n=800）にして C/K/b04 と横並び。
+  **測って初めて分かった最重要事実**: staleness 92–94 step は
+  **「量子化 24.5 = (submit_every−1)/2」+「transit 67–70 step」**に厳密分解でき
+  （4 run で量子化が 24.5 に一致）、transit の実体は
+  **client 1 session = 20 半荘（`train_play.clientN.games`）× 3 client の drain キュー**で
+  `submit_every` では動かない。⇒ **O1 の実効は staleness −21〜22% だけ**
+  （lag = param_version 単位で読むと「1/5 になる」と 5 倍の過大評価になる）。
+  スループット影響は実測 +1% 未満（submit 1回 ≈ 0.49–0.63s）。
+  計測器は `analyze_staleness_decomposition.py`（新規・read-only・resume run の base 補正あり）。
+  seed 方針は §5 で「**別 seed = 同一 config・新規 run dir**」（`TrainPlayer.__init__` が
+  `secrets.randbits(64)` で client ごとに `train_key` を引くため訓練は非決定論。
+  一方 eval は決定論）と「**同じ方向 = 主判定の符号一致**（推奨）」を提案。
+  副産物の負債: **`train_key` はどこにもログされていない** = run の完全再現は原理的に不可能
