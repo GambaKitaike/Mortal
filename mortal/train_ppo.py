@@ -1,3 +1,10 @@
+# 子プロセスが「完走した（max_steps 到達）」ことを main() の監督ループへ伝える終了コード。
+# 0 は本家 online DQN 由来の「test_play 境界なので作り直して続行」の意味で使われており、
+# 完走と区別がつかなかった（バックログ4）。値は他のどの終了経路とも衝突しないものを選ぶ
+# （Python の未捕捉例外 = 1、シグナル終了 = 128+n）。
+TRAINING_COMPLETE_EXIT_CODE = 21
+
+
 def train_ppo():
     import prelude
 
@@ -670,8 +677,13 @@ def train_ppo():
     inline_test_play = not (max_steps and test_every > max_steps)
     if online and inline_test_play and steps % test_every != 0:
         run_test_play()
-    if online and (max_steps and steps >= max_steps or steps % test_every == 0):
-        sys.exit(0)
+    if online:
+        if max_steps and steps >= max_steps:
+            # 完走。main() に「再起動するな」と伝える（exit 0 だと区別できない）。
+            sys.exit(TRAINING_COMPLETE_EXIT_CODE)
+        if steps % test_every == 0:
+            # test_play 境界。本家どおり子を作り直して続行する。
+            sys.exit(0)
 
 
 def main():
@@ -701,7 +713,19 @@ def main():
             stderr=sys.stderr,
             env=env,
         )
-        if (code := child.wait()) != 0:
+        code = child.wait()
+        if code == TRAINING_COMPLETE_EXIT_CODE:
+            # 完走したので子を作り直さない（バックログ4 の根治）。従来は 3 秒後に
+            # もう1つ子を spawn しており、追加学習は 0 step だが実害が2つあった:
+            #   (a) 孫の cmdline が launcher の cleanup パターンに掛からず孤児化して
+            #       GPU を掴み得る
+            #   (b) cleanup は server を先に落とすため、その子の submit_param が
+            #       ConnectionRefusedError で落ち、**完走した run の trainer.log が
+            #       例外で終わる**（Arm K / L1 O1 / L1 O3 で3回連続で発生）
+            # 本関数を return すると外側は終了コード 0 になり、launcher の
+            # trainer_watchdog の「exit 0 = 正常完走、再起動しない」経路に乗る。
+            return
+        if code != 0:
             sys.exit(code)
         time.sleep(3)
 

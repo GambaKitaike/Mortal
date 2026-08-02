@@ -382,7 +382,18 @@ marginal value は隠れ情報 oracle 層にある、観測用 SP 計算は `age
    (b) cleanup が server を先に落とすため `submit_param` が `ConnectionRefusedError` で
    落ち、**完走 run の trainer.log が例外で終わる**（実例: Arm K。判定値・checkpoint は無傷）。
    launcher 側で「trainer 系を server より先に reap + 孫パターン追加」まで対処済み。
-   **根治（train_ppo.py 側で完走時に再起動しない）は学習コード変更につき Gamba 裁定待ち**
+   **根治は 2026-08-02 に完了**（ブランチ `fix-train-ppo-respawn`、報告は
+   `freeparlor/docs/reports/backlog4_respawn_fix_20260802.md`）。**鎖は2本あった**:
+   (1) `train_ppo.py` の `main()` が完走(exit 0)と test_play 境界(exit 0)を区別できず
+   3秒後に子を再 spawn していた → 完走専用の終了コード
+   `TRAINING_COMPLETE_EXIT_CODE = 21` を導入して区別（本家の境界再起動は保存）。
+   (2) **`cleanup` の `kill $TRAINER_WATCHDOG_PID` が無効だった** — `trainer_watchdog &` は
+   関数を既にサブシェルで走らせるため `$!` は外側の包みを指し、ループを持つ内側の
+   `( ... )` が生き延びて、cleanup が pkill した trainer を **143 を異常終了と誤認して蘇生**
+   していた（O1 / O3 の `trainer_watchdog.log` に `code=143, restart 1/3` の一次証拠）。
+   内側サブシェルを外し、143/130 は再起動しないようにした（client watchdog にも同適用）。
+   run-validation: `max_steps=20`/`test_every=10` の smoke 2本で、境界の再起動は保存・
+   完走後の再起動と Traceback は消失・残党 0・exit=0 を実測
 5. ~~**メタ系ハーネスのミラー較正 RUN**~~ **消化済み（2026-07-27）**: Arm C の eval
    バッテリーで初適用し **overall PASS**（理論ミラー値 素点 −5 / 順位点 0 / チップ 0 と
    SE 圏内で一致）。レンズ3 のゼロ点が実測で裏付けられた（`anchor_arm_c_result.md` §1）

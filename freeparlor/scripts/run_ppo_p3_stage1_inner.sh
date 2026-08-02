@@ -179,8 +179,15 @@ start_trainer() {
   PYTHONUNBUFFERED=1 conda run --no-capture-output -n mortal python /home/gamba/mahjong/runs/run_train_ppo.py \
     >> "$LOG_DIR/trainer.log" 2>&1
 }
+# NOTE (2026-08-02): この関数は以前 body 全体を `( ... )` で包んでいたが、
+# `trainer_watchdog &` は関数自体を既にサブシェルで走らせるため、$! が指すのは
+# **外側の包み**で、内側の `( ... )` は kill されずに生き残っていた。cleanup の
+# `kill "$TRAINER_WATCHDOG_PID"` が無効化され、cleanup が trainer を pkill した直後に
+# watchdog が trainer を蘇らせ、死にかけの server に submit_param して
+# ConnectionRefusedError を吐く——という偽トレースバックの2つ目の鎖になっていた
+# （anchor_k / L1 O1 / L1 O3 の3 run で観測、smoke_respawn_20260802_182624 で再現）。
+# 内側のサブシェルを外し、$! がループ本体を指すようにする。
 trainer_watchdog() {
-  (
     set +e
     local restarts=0
     local window_start
@@ -194,6 +201,13 @@ trainer_watchdog() {
       # (observed in Stage3 run, 2026-07-13).
       if (( code == 0 )); then
         echo "$(date -Iseconds) trainer completed normally (exit 0), watchdog stopping (no restart)" \
+          >> "$LOG_DIR/trainer_watchdog.log"
+        break
+      fi
+      # 143 = SIGTERM / 130 = SIGINT: 誰か（cleanup 含む）が意図的に落とした。
+      # 蘇生すると上記の偽トレースバックになるので再起動しない。
+      if (( code == 143 || code == 130 )); then
+        echo "$(date -Iseconds) trainer terminated by signal (code=$code), watchdog stopping (no restart)" \
           >> "$LOG_DIR/trainer_watchdog.log"
         break
       fi
@@ -213,7 +227,6 @@ trainer_watchdog() {
         >> "$LOG_DIR/trainer_watchdog.log"
       sleep 5
     done
-  )
 }
 trainer_watchdog &
 TRAINER_WATCHDOG_PID=$!
@@ -228,7 +241,7 @@ start_client() {
 }
 client_watchdog() {
   local i=$1
-  (
+    # trainer_watchdog と同じ理由で内側サブシェルを外す（$! = ループ本体）。
     set +e
     local restarts=0
     local window_start
@@ -236,6 +249,12 @@ client_watchdog() {
     while kill -0 "$SERVER_PID" 2>/dev/null; do
       start_client "$i"
       code=$?
+      # シグナル終了は意図的な停止（cleanup）なので蘇生しない
+      if (( code == 143 || code == 130 )); then
+        echo "$(date -Iseconds) client${i} terminated by signal (code=$code), watchdog stopping" \
+          >> "$LOG_DIR/client${i}_watchdog.log"
+        break
+      fi
       if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi
       now=$(date +%s)
       if (( now - window_start >= 3600 )); then
@@ -252,7 +271,6 @@ client_watchdog() {
         >> "$LOG_DIR/client${i}_watchdog.log"
       sleep 5
     done
-  )
 }
 for i in $(seq 0 $((NUM_CLIENTS - 1))); do
   client_watchdog "$i" &
