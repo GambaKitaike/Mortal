@@ -19,6 +19,9 @@ pub struct BatchGame {
     /// occupied by agent_idx 0 (the "trainee"/"challenger" by this codebase's
     /// convention, see `run`).
     pub p_enrich: f64,
+    /// 西入の無効化 (parlor_rule_west_round_design.md W1)。
+    /// `false` (既定) が天鳳準拠 = 現行挙動。
+    pub disable_west_round: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -54,6 +57,14 @@ struct Game {
 
     kyoku_started: bool,
     ended: bool,
+    /// 西入（サドンデス）を無効化する = 南4 終了でそのまま終局する。
+    /// フリー雀荘ルールでは西入を通常採用しない
+    /// (`freeparlor/docs/design/parlor_rule_west_round_design.md` W1)。
+    ///
+    /// **`Game` は `Default` を derive しているので、既定値 (`false`) が
+    /// 天鳳準拠 = 現行挙動になる向きで持つこと**（`enable_` にすると
+    /// `..Default::default()` 経由の構築が黙ってルールを変えてしまう）。
+    disable_west_round: bool,
     /// Used in 西入 where the oya and another player get to 30000 at the same
     /// time, but the game continues because oya is not the top.
     ///
@@ -76,10 +87,14 @@ impl Game {
             // or, after all-last
             //   and, oya is not in renchan (if oya is in renchan, it would already have been ended in the renchan owari check)
             //   and, anyone has more than 30k
+            // 西入を無効化した場合は、南4 終了時に点数を問わず終局する
+            // (親の連荘条件は変更しない = 本家のまま。雀荘ごとの差異は
+            //  parlor_rule_west_round_design.md §6-2 で未決)
             if self.kyoku >= self.length + 4
                 || self.kyoku >= self.length
                     && !self.in_renchan
-                    && self.scores.iter().any(|&s| s >= 30000)
+                    && (self.disable_west_round
+                        || self.scores.iter().any(|&s| s >= 30000))
             {
                 self.ended = true;
                 return Ok(());
@@ -235,6 +250,7 @@ impl BatchGame {
             init_scores: [25000; 4],
             disable_progress_bar,
             p_enrich: 0.0,
+            disable_west_round: false,
         }
     }
 
@@ -283,6 +299,7 @@ impl BatchGame {
                     oracle_obs_versions,
                     p_enrich: self.p_enrich,
                     trainee_seat,
+                    disable_west_round: self.disable_west_round,
                     ..Default::default()
                 });
                 Ok((game_idx, game))

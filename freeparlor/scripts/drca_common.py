@@ -378,4 +378,5 @@ def compute_kyoku_rewards(log_path: str, player_id: int, *, device=None) -> Kyok
 
 
 def make_arena(log_dir: str):
-    return OneVsThree(disable_progress_bar=True, log_dir=str(log_dir))
+    return OneVsThree(disable_progress_bar=True, log_dir=str(log_dir),
+                      enable_west_round=config['env']['enable_west_round'])

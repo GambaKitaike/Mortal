@@ -14,6 +14,10 @@ _env_defaults = {
     'chip_n_step': 3,
     'chip_target_tau': 0.005,
     'chip_weight': 1.0,
+    # 西入（サドンデス）。既定 True = 天鳳準拠 = 現行挙動でビット不変。
+    # False でフリー雀荘ルール（南4 終了で点数を問わず終局）。
+    # parlor_rule_west_round_design.md W1。
+    'enable_west_round': True,
 }
 config.setdefault('env', {}).update({k: v for k, v in _env_defaults.items() if k not in config['env']})
 config.setdefault('dataset', {}).setdefault('games_per_batch', 4)

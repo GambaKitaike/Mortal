@@ -143,3 +143,86 @@ S2 を採る場合は O1 の凍結記録に amendment（baseline の再定義）
 3. 他にも本家（天鳳）ルールと雀荘ルールの差が無いかの棚卸し
    （割れ目・途中流局の採否・ダブロン/トリロン・南入時の供託・飛び終了の点数など）。
    **今回1件見つかった以上、体系的に洗うべき**（レンズ4 の副産物として起票）
+
+---
+
+## 7. W1 の実装と run-validation（2026-08-02）
+
+**ステータス: W1 実装完了・検証済み。** ブランチ `w1-west-round-flag`。
+
+### 7-1. 実装
+
+| 層 | 変更 |
+|---|---|
+| `libriichi/src/arena/game.rs` | `Game.disable_west_round` / `BatchGame.disable_west_round` を追加。終局条件を `... && (self.disable_west_round \|\| self.scores.iter().any(\|&s\| s >= 30000))` に。**`Game` は `Default` derive なので、既定値 `false` が天鳳準拠になる向き**でフィールドを持つ（`enable_` にすると `..Default::default()` 経由の構築が黙ってルールを変える） |
+| `libriichi/src/arena/one_vs_three.rs` | `OneVsThree` に pyo3 kwarg `enable_west_round=true`（既定 = 現行挙動）を追加し `BatchGame` へ渡す |
+| `mortal/config.py` | `_env_defaults` に `'enable_west_round': True` |
+| 呼び出し側（全5ファイル） | `player.py`(4箇所) / `one_vs_three.py` / `eval_grp_baseline_1v3.py` / `eval_meta_stage1_vs_stage2.py` / `drca_common.py` が config から読む |
+| `verify_ppo_p1.py` | **検定(22)** を追加（config 既定 True / pyo3 既定 True / フラグの受理） |
+
+**親の連荘条件（`game.rs:160-178`）は変更していない**（§6-2 は未決のまま）。
+`TwoVsTwo` は Python から使われていないので `tenhou_hanchan()` の既定（西入あり）のまま。
+
+### 7-2. run-validation（実機・1v3 n=800・init 対 init）
+
+**(a) 既定はビット不変** — 同一 seed・同一 `EVAL_SEED_COUNT=200` で変更前の
+`game_logs_init` と比較:
+
+| 比較 | 結果 |
+|---|---|
+| イベント列 | **800/800 完全一致** |
+| `meta` の `q_values` まで含む（`eval_time_ns` のみ除外） | **800/800 完全一致** |
+
+**(b) フラグ OFF の挙動**:
+
+| 検査 | 結果 |
+|---|---|
+| 西場の局数 | ON 59 → **OFF 0** |
+| 西入しなかった半荘 | **773/800 が完全一致** |
+| 西入していた半荘 | **27/27 が「西1 開始の直前まで完全一致 + `end_game` で終局」** |
+
+27/800 = 3.38% は §2 の実測（init 脚 27/800）と一致する。
+
+### 7-3. 副産物の知見（**運用に効く**）
+
+最初の比較を `EVAL_SEED_COUNT=50` で行ったところ、**200 半荘中 12 件（6%）で行動列が食い違った**。
+原因は seed_count が変わると **GPU バッチ形状が変わり** `q_values` の下位桁がずれ、
+僅差の局面で argmax が反転するため（打牌そのものは同一なのに、以降の局が分岐する）。
+
+⇒ **「eval は決定論」という本プロジェクトの前提は、`EVAL_SEED_COUNT`（バッチ形状）が
+同一であることを条件とする。** n=400 の測定と n=800 の測定を「同じもの」として
+突き合わせるときはこの点に注意すること（統計的検出力とは別の論点）。
+
+## 8. S1 の実施方法（**裁定事項**）
+
+W1 は入ったので、あとは「以後の run を西入なしにする」だけ。方法が2つある:
+
+| 案 | 内容 | 長所 | 短所 |
+|---|---|---|---|
+| **S1a（推奨）** | `config.py` の既定は **True のまま**にし、**新しい run の config で明示的に `enable_west_round = false`** を書く | 過去 run の config を再実行しても当時の挙動を再現できる（reproducibility を壊さない） | 新 config ごとに書き忘れの余地 → launcher の凍結値検査で assert すれば潰せる |
+| S1b | `config.py` の既定を **false に反転** | 書き忘れが起きない | **過去の全 config の意味が黙って変わる**（「サイレント修正禁止」に抵触） |
+
+### 8a. 裁定の記録（2026-08-02、Gamba）
+
+> 「**S1aでやりましょう**」
+
+| 項目 | 裁定 |
+|---|---|
+| 既定の扱い | **`config.py` の既定は `True`（天鳳準拠）のまま据え置く**。過去 run の config を再実行しても当時の挙動が再現できる |
+| 新 run の扱い | **新しい run の config に `[env] enable_west_round = false` を明示的に書く** |
+| 書き忘れの防止 | 次の run の launcher に `enable_west_round = false` の**存在検査**を入れる（L1 O1/O3 の凍結値検査と同じ方式）。書き忘れたら発進しない |
+
+⇒ **S1 は「新レジーム最初の run の設計・発進」とセットで完了する。**
+W1（本書 §7）までが独立に完了した状態で、S1 の残作業は §8-1 の再測定と
+次 run の config/launcher。
+
+### 8-1. S1 実施時に必要になる再測定
+
+ルールが変わるので、**init と参照脚を新ルールで測り直す**必要がある（eval のみ・GPU 数時間）:
+
+- init 脚（判定1/2 の分母）
+- 参照脚 Stage1-16000（`Δ放銃_ref`。現行の凍結値 +2.876pp は**西入あり**での測定）
+
+**訓練側は揃わない**（init も Stage1-16000 も西入ありで訓練された checkpoint）。
+これは §3-1 のとおり避けられない。新レジーム最初の run の設計書で留保として明記すること。
+

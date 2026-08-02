@@ -189,7 +189,8 @@ def main():
         seed_base, seed_base + seed_count, seed_key, total_hanchans,
     )
 
-    env = OneVsThree(disable_progress_bar=True, log_dir=str(game_log_dir))
+    env = OneVsThree(disable_progress_bar=True, log_dir=str(game_log_dir),
+                     enable_west_round=config['env']['enable_west_round'])
     rankings = env.py_vs_py(
         challenger=challenger_engine,
         champion=baseline_engine,
