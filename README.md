@@ -4,6 +4,10 @@
 ベースに、**チップ（祝儀）ありのフリー雀荘ルールで勝てる打牌**を学習させるには
 報酬をどう設計すべきかを実験的に解明するプロジェクト。
 
+> **現在地（2026-08-02）**: 探索ラダー（Stage1〜3）・anchor 系列・L1 系列はいずれも閉幕し、
+> 現行軸は **候補2（敵対的搾取者）**。各系列の総括は下記の該当節と
+> `freeparlor/docs/reports/*_summary_*.md` が正。進行中 run の状態は `CLAUDE.md`。
+
 > **位置づけ — これは検証用モデルであり、商用プロダクトではない。**
 > 最終目標は商用フリー雀荘特化麻雀AIだが、それは本リポジトリの延長では作らない。
 > 本プロジェクトの目的は「**どんな報酬設計が、チップあり麻雀でどんな打牌効果を生むか**」を、
@@ -91,7 +95,7 @@ cluster-robust SE）:
 
 ---
 
-## 現在進行中: anchor 系列（アンカー付き PPO）— 基礎技能劣化への対策
+## 閉幕: anchor 系列（アンカー付き PPO）— 基礎技能劣化への対策
 
 探索ラダーと並行して、**PPO 自己対戦が Mortal 由来の基礎技能（牌理・降り）を
 有意に劣化させている**ことが判明した（放銃劣化 z = +3.9〜+4.4、和了劣化 −2.1〜−3.6、
@@ -100,16 +104,83 @@ cluster-robust SE）:
 鳴いた後のサブゲームが未熟」「降りの規律が崩壊気味」という像が一致した。
 
 そこで**凍結した init（教師データ由来の基礎技能を持つ方策）をアンカーとして参照させる**
-単一変数アブレーションを設計・凍結し（`freeparlor/docs/design/anchored_ppo_design.md`）、
-実施中:
+単一変数アブレーションを3 arm 実施した（`anchored_ppo_design.md`、判定条件は事前登録済み
+= 判定窓 step 8000–16000 / 放銃差 z<2 / チップ +方向 ≥1SE / 1v3 両脚 n=800）。
 
-| Arm | 介入 | 状態 |
+| Arm | 介入 | 判定1（基礎維持） | 判定2（経済） |
+|---|---|---|---|
+| **C** | opponent pool へ凍結 init を `anchor_prob=0.25` で常駐 | ✗ | ✗（+0.45SE） |
+| **K** | `ppo_loss` に凍結 init への masked full KL 項（`kl_beta=0.1`） | ✗（z=+2.51） | ○（+2.18SE） |
+| **b04** | 同上・`kl_beta=0.4` | ✗（z=+2.21） | ○（+1.75SE） |
+
+**3 arm すべてで判定1 は不成立**（`anchor_series_summary_20260731.md`）。得られた知見は2つ:
+
+- **引き戻しは相手分布（pool）より損失側（KL）に置くほうが効く**（単一変数で確定）
+- **中心的知見: 基礎技能は悪化したが EV は大きく上昇した**。チップ +0.4〜0.5枚/半荘
+  （= +2.0〜2.5千点相当）で、放銃が有意に増え和了も減っているのに avg_rank は不変・
+  収支は改善した。⇒ **チップありのルールでは基礎技能（放銃率・和了率）だけで
+  AI の性能を説明できない**
+
+---
+
+## 閉幕: L1 系列（最適化衛生）— 劣化の原因は最適化にあるか
+
+8 run 横断の診断（`ppo_optimization_health_20260725.md`）で、全 run に共通する
+構造的事実が3つ見つかった: (1) `minibatch_size=512` は一度も効いていない
+（1 optimizer step = 1半荘の full-batch × 4 epochs）、(2) **バッチ到着時点で既に
+clip_fraction ≈ 0.20–0.33**（= 収集経験の約2割が恒常的に勾配に寄与していない）、
+(3) 4 epochs は trust region 占有をほぼ動かさない。
+
+因果は未検証だったので、**改善策ではなく対照実験**として2本を単一変数で走らせた
+（判定条件は anchor 系列と同一計測器）。
+
+| arm | 単一変数 | 判定1 放銃差 | 判定2 チップ | 合算 |
+|---|---|---:|---:|---:|
+| 参照 plain PPO | — | +2.876pp（z=+5.43） | +0.630（+2.63SE） | +2.809 |
+| **O1** | `submit_every` 50→10 | ✗ +2.635pp（z=+4.91） | ○ +0.381（+1.62SE） | −2.128 |
+| **O3** | `ppo_epochs` 4→1 | ✗ +1.620pp（z=+3.13） | ○ **+0.639（+2.77SE）** | **+5.237（+1.89SE）** |
+
+**判定1 は両 arm とも不成立**だが、**O3 は放銃劣化が系列最小・チップが系列最大で、
+合算（素点+順位点+チップ）が init を上回った**（全ストリームが + 方向は本プロジェクト初）。
+事前登録した識別指標（init からの行動シフト量）により「単に学習が進んでいないだけ」は
+否定済み。
+
+**系列の中心的知見**（`l1_series_summary_20260802.md`）:
+
+| | staleness（バッチ） | ×epochs = 経過 optimizer 更新 | clip@epoch1 |
+|---|---:|---:|---:|
+| 参照 | 91.5 | 366 | 0.2019 |
+| O1 | 73.0（−20%） | 292（−20%） | 0.2046（**不変**） |
+| O3 | 90.7（不変） | **91（−75%）** | **0.0521（−75%）** |
+
+⇒ **clip を支配していたのは staleness ではなく「古い間にパラメータをどれだけ動かしたか」**。
+診断の事実(2) の主因を特定した。
+
+---
+
+## 進行中: 候補2 — 敵対的搾取者（立直マキシマリズムは搾取可能か）
+
+これまでの全 run は challenger を「mortal 的な相手のプール」と戦わせてきた。つまり
+Stage1-16000 は**mortal 的な相手へのベストレスポンス**として育った方策であり、
+**完成した Stage1-16000 自身へのベストレスポンスは一度も計算していない**。
+
+検定する命題は1つ — **H(EX): 立直マキシマリズム均衡は搾取可能か**
+（`adversarial_exploiter_design.md`、2026-08-02 凍結）。単一変数は
+**訓練 rollout の相手分布を「自己対戦プール」から「凍結標的 ×3」へ替える**こと
+（実装は既存の `OpponentPool` の外部 checkpoint 分岐を `anchor_prob=1.0` で使う。新規コードゼロ）。
+
+判定は 2×2 の差分の差分で、「ただ強くなった」と「標的固有の搾取」を分ける:
+
+| セル | challenger | baseline ×3 |
 |---|---|---|
-| **C** | opponent pool へ凍結 init を `anchor_prob=0.25` で常駐（損失は不変） | **本走中・凍結**（step 16000 まで） |
-| **K** | `ppo_loss` に凍結 init への masked full KL 項（`kl_beta=0.1`、anneal なし） | 実装・検定完了、**未発進** |
+| A | 搾取者 | **標的**（Stage1-16000） |
+| B | 搾取者 | init |
+| C | init | **標的** |
+| D | init | init（ミラー = 理論値 0） |
 
-判定条件は事前登録済み（判定窓 step 8000–16000、**基礎維持**: 放銃差 z<2 かつ
-**チップ +方向 ≥1SE**、1v3 両脚 n=800）。最新の進捗は `CLAUDE.md`「現在の状態」節を参照。
+**DiD = (A − C) − (B − D)** の**順位点 EV**（ウマオカが非対称なので avg_rank ではなく
+EV で判断する）が **≥ +2SE** なら搾取の存在証明。どちらに転んでも知見になる
+（搾取あり = 均衡は自己対戦の産物 / 搾取なし = ベストレスポンスの不動点に近い頑健均衡）。
 
 ---
 
@@ -129,6 +200,11 @@ cluster-robust SE）:
 
 4人打ち・喰いタン・赤×3・25000持ち30000返し・ウマ10-20・オカあり、β=1
 （1チップ=5000点）。
+
+**西入（サドンデス）は採用しない**（フリー雀荘ルールでは通常行わない）。
+libriichi は天鳳準拠で西入を実装しているため、`[env] enable_west_round` で
+config フラグ化した（**既定 `true` = 天鳳準拠でビット不変**、新しい run は
+`false` を明示する）。実装と run-validation は `parlor_rule_west_round_design.md` §7/§8。
 
 ---
 
@@ -168,14 +244,23 @@ run 発進は `runs/` の spawn ランチャ（`freeparlor/scripts/run_ppo_*.sh`
 - `freeparlor/docs/design/reward_design_teacherfree.md` — 報酬設計の確定事項
 - `freeparlor/docs/design/stage2_design.md` / `stage3_design.md` — 各Stageの設計・
   事前登録済み判定条件
-- `freeparlor/docs/reports/ppo_p3_stage1_result.md` / `_stage2_result.md` /
-  `_stage3_result.md` — 各Stageの判定結果
+- `freeparlor/docs/reports/ppo_p3_stage1_result.md` /
+  `ppo_p3_stage2_result.md` / `ppo_p3_stage3_result.md` — 各Stageの判定結果
 - `freeparlor/docs/design/drca_probe_design.md` — DRCAプローブの設計・解釈条件・打ち切り裁定
 - `freeparlor/docs/reports/fundamentals_degradation_diagnosis_20260725.md` /
   `fundamentals_significance_pass_20260725.md` — 基礎技能劣化の診断と有意性
-- `freeparlor/docs/design/anchored_ppo_design.md` — 現行のanchor系列の設計（凍結済み）
+- `freeparlor/docs/design/anchored_ppo_design.md` — anchor 系列の設計（closed）と
+  `freeparlor/docs/reports/anchor_series_summary_20260731.md` — **その総括**
+- `freeparlor/docs/design/l1_o1_submit_every_design.md` / `l1_o3_ppo_epochs_design.md` —
+  L1 系列の事前登録（凍結済み）と
+  `freeparlor/docs/reports/l1_series_summary_20260802.md` — **その総括**
+- `freeparlor/docs/design/adversarial_exploiter_design.md` — **現行軸**（候補2）の
+  事前登録（凍結済み）
+- `freeparlor/docs/design/parlor_rule_west_round_design.md` — 西入の除去（W1/S1）
 - `freeparlor/docs/design/teacherfree_training_candidates.md` — 教師データ非依存の
   訓練方式候補（cold start / 均衡脱出の分離。DRAFT・非事前登録。下記「商用版」の土台）
+- `freeparlor/docs/ops/qualitative_review_protocol.md` — レンズ4（人手の牌譜レビュー）の
+  手順。**所見は必ず定量指標に突き合わせる**
 - `freeparlor/docs/ops/project_history.md` — 2026-07-06以降の時系列経緯
 - `CLAUDE.md` — 現在の状態・作業規律（進行中runの正）
 
@@ -184,10 +269,25 @@ run 発進は `runs/` の spawn ランチャ（`freeparlor/scripts/run_ppo_*.sh`
 ## 今後
 
 ### 本リポジトリ内（調査の継続）
-- anchor 系列（進行中）: Arm C 完走 → eval バッテリー → 判定 → Arm K 発進 → 判定
-- 方針設計セッション: 立直マキシマリズムの商用採否、経済定数変更、敵対的搾取者訓練の
-  要否を、上記の帰結と併せて裁定（事前フレーム `freeparlor/docs/ops/policy_session_0b_frame.md`）
+- **候補2（進行中）**: 搾取者 run 完走 → eval（基礎技能 n=800 + DiD 4セル n=1600）→
+  レンズ4（搾取戦術が牌譜に読めるか）→ 判定
+- **候補1（次）**: oracle 蒸留 / シミュレータ由来の自己教師あり補助タスク（問題 I）
+- 未決の裁定: **`ppo_epochs=1` を以後の既定にするか**（O3 は同じ計算資源でより良い方策に
+  見えるが判定1 は不成立で、逐次スクリーニング規律では既定化に 2 seed 目が要る）
+- レンズ4 起票の計装3件（打点・安全度を含む打牌評価 / 七対子ルート選択 / 役牌暗刻落としの
+  横断測定）— GPU 不要
+- L1 の残り O2（複数半荘の batch 束ね。判定窓を消費半荘数で定義し直す必要あり）
 - DRCA 残枠の再開可否（現在は保留・成果物は退避済み）
+
+### 積み上がった知見（系列を跨いで効くもの）
+1. **チップありのルールでは基礎技能だけで性能を説明できない**（anchor 総括）
+2. **clip を支配するのは staleness ではなく経過 optimizer 更新数**（L1 総括）
+3. **損傷もチップ獲得も最初の 2000 step でほぼ完了する**
+   （`anchor_checkpoint_trajectory_20260728.md`）
+4. **同一 config の run 間ばらつきが効果量と同程度**なので、新規アイデアは
+   1 seed → 事前登録の判定を満たしたものだけ 2 seed 目、という逐次スクリーニングを敷いている
+5. **eval の決定論は `EVAL_SEED_COUNT`（GPU バッチ形状）が同一であることを条件とする**
+   （`parlor_rule_west_round_design.md` §7-3）
 
 ### 商用版（別実装・本リポジトリの外）
 商用フリー雀荘AIは、本リポジトリの延長ではなく**ゼロから実装する**予定。理由は2つ：
