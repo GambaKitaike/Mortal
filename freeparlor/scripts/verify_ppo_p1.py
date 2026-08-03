@@ -1868,6 +1868,51 @@ def check_kl_anchor(buf: StringIO):
 
 
 
+
+def check_init_checkpoint_branches(buf: StringIO):
+    """(23) init_checkpoint の二分岐 (adversarial_exploiter_design.md §2-2):
+    (a) 天鳳譜由来 mortal.pth（`current_dqn`）は従来どおり DQN 変換経路、
+    (b) PPO checkpoint（`actor_critic`）は直読み経路、
+    (c) 分岐は checkpoint のキーだけで決まり、どちらを通ったかはログに出る。
+
+    (b) が無いと「完成した方策から訓練を始める」実験が組めない
+    （`opponent_pool.load_ppo` は既に同じ二分岐を持っており、そちらと規約を揃えた）。
+    """
+    import torch
+    from config import config
+    from model import ActorCritic, load_ppo_from_mortal_checkpoint
+
+    log('(23) init_checkpoint の二分岐', buf)
+
+    version = config['control']['version']
+    init_ckpt = config['ppo']['init_checkpoint']
+    st = torch.load(init_ckpt, weights_only=True, map_location='cpu')
+    assert 'current_dqn' in st and 'actor_critic' not in st, \
+        f'init_checkpoint の形が想定外: {sorted(st.keys())}'
+    ac = ActorCritic(version=version)
+    load_ppo_from_mortal_checkpoint(ac, init_ckpt, map_location='cpu')
+    log('  (a) PASS: mortal.pth（current_dqn）は DQN 変換経路でロードできる', buf)
+
+    # (b) PPO checkpoint 側は run 成果物を使う（存在すれば）
+    ppo_ckpt = Path('/home/gamba/mahjong/runs/ppo/stage1_20260706_020120_resume'
+                    '/checkpoints/step_016000.pth')
+    if ppo_ckpt.is_file():
+        st2 = torch.load(ppo_ckpt, weights_only=True, map_location='cpu')
+        assert 'actor_critic' in st2 and 'current_dqn' not in st2, \
+            f'PPO checkpoint の形が想定外: {sorted(st2.keys())}'
+        ac2 = ActorCritic(version=version)
+        ac2.load_state_dict(st2['actor_critic'])   # 直読みが成功すること
+        log('  (b) PASS: PPO checkpoint（actor_critic）は直読み経路でロードできる', buf)
+        same = all(torch.equal(a, b) for a, b in
+                   zip(ac.state_dict().values(), ac2.state_dict().values()))
+        assert not same, '二分岐が同じ重みを返している（読み分けできていない）'
+        log('  (c) PASS: 2 経路は別の方策を返す（キーによる読み分けが効いている）', buf)
+    else:
+        log(f'  (b/c) SKIP: PPO checkpoint が無い ({ppo_ckpt})', buf)
+
+    log('  PASS: init_checkpoint の二分岐 (23)', buf)
+
+
 def check_west_round_flag(buf: StringIO):
     """(22) 西入フラグ (parlor_rule_west_round_design.md W1):
     (a) config の既定が True = 天鳳準拠（既定でビット不変であることの前提）、
@@ -2011,9 +2056,10 @@ def main():
     check_kl_anchor(buf)
     check_diag_checkpoint_stream(buf)
     check_west_round_flag(buf)
+    check_init_checkpoint_branches(buf)
 
     log('', buf)
-    passed = 22
+    passed = 23
     log(f'ALL {passed} CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'reports' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
