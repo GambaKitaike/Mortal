@@ -106,10 +106,21 @@ def train_ppo():
     else:
         init_ckpt = ppo_cfg.get('init_checkpoint')
         if init_ckpt:
-            load_ppo_from_mortal_checkpoint(actor_critic, init_ckpt, map_location=device)
-            mortal_state = torch.load(init_ckpt, weights_only=True, map_location=device)['mortal']
-            mortal.load_state_dict(mortal_state)
-            logging.info(f'initialized from {init_ckpt}')
+            # init_checkpoint は2種類ありうる:
+            #   (a) 天鳳譜由来の mortal.pth（`current_dqn` を持つ）= 従来の全 run
+            #   (b) PPO の checkpoint（`actor_critic` を持つ）= 完成した方策から始める場合
+            # (b) は adversarial_exploiter_design.md §2-2 の「標的のコピーから初期化」で要る。
+            # `opponent_pool.load_ppo` が既に同じ二分岐を持っており、そちらと同一規約にする。
+            # **どちらの経路を通ったかは必ずログに出す**（サイレントフォールバック禁止）。
+            init_state = torch.load(init_ckpt, weights_only=True, map_location=device)
+            if 'actor_critic' in init_state:
+                actor_critic.load_state_dict(init_state['actor_critic'])
+                init_kind = 'ppo(actor_critic)'
+            else:
+                load_ppo_from_mortal_checkpoint(actor_critic, init_ckpt, map_location=device)
+                init_kind = 'mortal(current_dqn->a_head)'
+            mortal.load_state_dict(init_state['mortal'])
+            logging.info(f'initialized from {init_ckpt} [{init_kind}]')
 
     logging.info(f'PPO mortal params: {parameter_count(mortal):,}')
     logging.info(f'PPO actor_critic params: {parameter_count(actor_critic):,}')

@@ -1868,6 +1868,78 @@ def check_kl_anchor(buf: StringIO):
 
 
 
+
+def check_init_checkpoint_branches(buf: StringIO):
+    """(23) init_checkpoint の二分岐 (adversarial_exploiter_design.md §2-2):
+    (a) 天鳳譜由来 mortal.pth（`current_dqn`）は従来どおり DQN 変換経路、
+    (b) PPO checkpoint（`actor_critic`）は直読み経路、
+    (c) 分岐は checkpoint のキーだけで決まり、どちらを通ったかはログに出る。
+
+    (b) が無いと「完成した方策から訓練を始める」実験が組めない
+    （`opponent_pool.load_ppo` は既に同じ二分岐を持っており、そちらと規約を揃えた）。
+    """
+    import torch
+    from config import config
+    from model import ActorCritic, load_ppo_from_mortal_checkpoint
+
+    log('(23) init_checkpoint の二分岐', buf)
+
+    version = config['control']['version']
+
+    # 分岐そのものは **固定の checkpoint** で検査する。config の init_checkpoint は
+    # 実験によって mortal.pth にも PPO checkpoint にもなる（それを可能にするのが本改修）
+    # ので、config の値で「形」を assert してはならない。
+    MORTAL_CKPT = Path('/home/gamba/mahjong/runs/phase4/beta1_huber_192x40/mortal.pth')
+    PPO_CKPT = Path('/home/gamba/mahjong/runs/ppo/stage1_20260706_020120_resume'
+                    '/checkpoints/step_016000.pth')
+
+    ac_a = None
+    if MORTAL_CKPT.is_file():
+        st = torch.load(MORTAL_CKPT, weights_only=True, map_location='cpu')
+        assert 'current_dqn' in st and 'actor_critic' not in st, \
+            f'mortal.pth の形が想定外: {sorted(st.keys())}'
+        ac_a = ActorCritic(version=version)
+        load_ppo_from_mortal_checkpoint(ac_a, str(MORTAL_CKPT), map_location='cpu')
+        log('  (a) PASS: mortal.pth（current_dqn）は DQN 変換経路でロードできる', buf)
+    else:
+        log(f'  (a) SKIP: {MORTAL_CKPT} が無い', buf)
+
+    ac_b = None
+    if PPO_CKPT.is_file():
+        st2 = torch.load(PPO_CKPT, weights_only=True, map_location='cpu')
+        assert 'actor_critic' in st2 and 'current_dqn' not in st2, \
+            f'PPO checkpoint の形が想定外: {sorted(st2.keys())}'
+        ac_b = ActorCritic(version=version)
+        ac_b.load_state_dict(st2['actor_critic'])
+        log('  (b) PASS: PPO checkpoint（actor_critic）は直読み経路でロードできる', buf)
+    else:
+        log(f'  (b) SKIP: {PPO_CKPT} が無い', buf)
+
+    if ac_a is not None and ac_b is not None:
+        same = all(torch.equal(x, y) for x, y in
+                   zip(ac_a.state_dict().values(), ac_b.state_dict().values()))
+        assert not same, '二分岐が同じ重みを返している（読み分けできていない）'
+        log('  (c) PASS: 2 経路は別の方策を返す（キーによる読み分けが効いている）', buf)
+
+    # (d) この run の init_checkpoint が **どちらの経路を通るか**を可視化する。
+    #     形は assert しない（実験ごとに変わってよい）。読めることだけを確かめる。
+    init_ckpt = config['ppo'].get('init_checkpoint')
+    if init_ckpt and Path(init_ckpt).is_file():
+        st3 = torch.load(init_ckpt, weights_only=True, map_location='cpu')
+        kind = 'ppo(actor_critic)' if 'actor_critic' in st3 else 'mortal(current_dqn->a_head)'
+        ac3 = ActorCritic(version=version)
+        if 'actor_critic' in st3:
+            ac3.load_state_dict(st3['actor_critic'])
+        else:
+            load_ppo_from_mortal_checkpoint(ac3, init_ckpt, map_location='cpu')
+        assert 'mortal' in st3, f'init_checkpoint に mortal が無い: {sorted(st3.keys())}'
+        log(f'  (d) PASS: この run の init_checkpoint は [{kind}] 経路でロードできる', buf)
+    else:
+        log('  (d) SKIP: init_checkpoint 未設定（resume 等）', buf)
+
+    log('  PASS: init_checkpoint の二分岐 (23)', buf)
+
+
 def check_west_round_flag(buf: StringIO):
     """(22) 西入フラグ (parlor_rule_west_round_design.md W1):
     (a) config の既定が True = 天鳳準拠（既定でビット不変であることの前提）、
@@ -2011,9 +2083,10 @@ def main():
     check_kl_anchor(buf)
     check_diag_checkpoint_stream(buf)
     check_west_round_flag(buf)
+    check_init_checkpoint_branches(buf)
 
     log('', buf)
-    passed = 22
+    passed = 23
     log(f'ALL {passed} CHECKS PASSED', buf)
     out_path = ROOT / 'freeparlor' / 'docs' / 'reports' / 'ppo_p1_verify_log.txt'
     out_path.write_text(buf.getvalue(), encoding='utf-8')
