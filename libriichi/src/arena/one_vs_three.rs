@@ -19,16 +19,33 @@ use rayon::prelude::*;
 pub struct OneVsThree {
     pub disable_progress_bar: bool,
     pub log_dir: Option<String>,
+    /// 西入（サドンデス）を行うか。既定 `true` = 天鳳準拠 = 現行挙動でビット不変。
+    /// `false` で南4 終了時に点数を問わず終局する（フリー雀荘ルール）。
+    /// `parlor_rule_west_round_design.md` W1。
+    ///
+    /// 注: `Default` derive では `false` になるが、Python から見える唯一の構築経路は
+    /// `#[new]` で、そちらの既定は `true`。Rust 側で `Default::default()` を使う
+    /// テスト等では明示すること。
+    ///
+    /// `#[pyo3(get)]` を付けて Python から読めるようにしてある（検定(22) が
+    /// 「既定が現行挙動である」ことを assert するため。構成を可観測にする規律）。
+    #[pyo3(get)]
+    pub enable_west_round: bool,
 }
 
 #[pymethods]
 impl OneVsThree {
     #[new]
-    #[pyo3(signature = (*, disable_progress_bar=false, log_dir=None))]
-    const fn new(disable_progress_bar: bool, log_dir: Option<String>) -> Self {
+    #[pyo3(signature = (*, disable_progress_bar=false, log_dir=None, enable_west_round=true))]
+    const fn new(
+        disable_progress_bar: bool,
+        log_dir: Option<String>,
+        enable_west_round: bool,
+    ) -> Self {
         Self {
             disable_progress_bar,
             log_dir,
+            enable_west_round,
         }
     }
 
@@ -41,6 +58,15 @@ impl OneVsThree {
         seed_count: u64,
         py: Python<'_>,
     ) -> Result<[i32; 4]> {
+        // Stage2 赤濃縮 (stage2_design.md §2): only the challenger ("trainee"
+        // client) ever supplies p_enrich; eval/opponent engines simply don't
+        // define the attribute and fall back to 0.0 (no-op).
+        let p_enrich = challenger
+            .bind_borrowed(py)
+            .getattr("p_enrich")
+            .and_then(|v| v.extract::<f64>())
+            .unwrap_or(0.0);
+
         // `allow_threads` is required, otherwise it will block python GC to
         // run, leading to memory leaks, since this function is doing long
         // tasks.
@@ -50,6 +76,7 @@ impl OneVsThree {
                 |player_ids| new_py_agent(champion, player_ids),
                 seed_start,
                 seed_count,
+                p_enrich,
             )?;
 
             let mut rankings = [0; 4];
@@ -75,6 +102,7 @@ impl OneVsThree {
                 |player_ids| new_py_agent(engine, player_ids),
                 seed_start,
                 seed_count,
+                0.0,
             )?;
 
             let mut rankings = [0; 4];
@@ -100,6 +128,7 @@ impl OneVsThree {
                 |player_ids| AkochanAgent::new_batched(player_ids).map(|a| Box::new(a) as _),
                 seed_start,
                 seed_count,
+                0.0,
             )?;
 
             let mut rankings = [0; 4];
@@ -119,6 +148,7 @@ impl OneVsThree {
         new_champion_agent: M,
         seed_start: (u64, u64),
         seed_count: u64,
+        p_enrich: f64,
     ) -> Result<Vec<GameResult>>
     where
         C: FnOnce(&[u8]) -> Result<Box<dyn BatchAgent>>,
@@ -159,7 +189,9 @@ impl OneVsThree {
             new_challenger_agent(&challenger_player_ids)?,
             new_champion_agent(&champion_player_ids)?,
         ];
-        let batch_game = BatchGame::tenhou_hanchan(self.disable_progress_bar);
+        let mut batch_game = BatchGame::tenhou_hanchan(self.disable_progress_bar);
+        batch_game.p_enrich = p_enrich;
+        batch_game.disable_west_round = !self.enable_west_round;
 
         let mut challenger_idx = 0;
         let mut champion_idx = 0;

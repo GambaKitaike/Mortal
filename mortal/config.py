@@ -14,6 +14,10 @@ _env_defaults = {
     'chip_n_step': 3,
     'chip_target_tau': 0.005,
     'chip_weight': 1.0,
+    # 西入（サドンデス）。既定 True = 天鳳準拠 = 現行挙動でビット不変。
+    # False でフリー雀荘ルール（南4 終了で点数を問わず終局）。
+    # parlor_rule_west_round_design.md W1。
+    'enable_west_round': True,
 }
 config.setdefault('env', {}).update({k: v for k, v in _env_defaults.items() if k not in config['env']})
 config.setdefault('dataset', {}).setdefault('games_per_batch', 4)
@@ -22,3 +26,30 @@ _control_defaults = {
     'huber_delta': 15.0,
 }
 config.setdefault('control', {}).update({k: v for k, v in _control_defaults.items() if k not in config['control']})
+_ppo_defaults = {
+    'enabled': False,
+    'eps_clip': 0.2,
+    'c_vf': 0.5,
+    'c_ent': 0.01,
+    'gae_lambda': 0.95,
+    'gamma_disc': 1.0,
+    'tau_init': 1.0,
+    'huber_delta': 15.0,
+    'lr': 3e-4,
+    'init_checkpoint': '',
+    'trajectory_glob': '',
+    'max_steps': 0,
+    'kl_beta': 0.0,
+    'kl_ref_checkpoint': '',
+}
+config.setdefault('ppo', {}).update({k: v for k, v in _ppo_defaults.items() if k not in config.get('ppo', {})})
+_opp_pool_defaults = {
+    'enabled': False,
+    'past_k': 5,
+    'latest_prob': 0.5,
+    'anchor_prob': 0.0,
+    'anchor_checkpoint': '',
+}
+config.setdefault('opponent_pool', {}).update(
+    {k: v for k, v in _opp_pool_defaults.items() if k not in config.get('opponent_pool', {})},
+)

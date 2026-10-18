@@ -58,8 +58,8 @@ pub trait BatchAgent {
         invisible_state: Option<InvisibleState>,
     ) -> Result<EventExt>;
 
-    fn start_game(&mut self, index: usize) -> Result<()> {
-        let _ = index;
+    fn start_game(&mut self, index: usize, game_key: &str) -> Result<()> {
+        let _ = (index, game_key);
         Ok(())
     }
 

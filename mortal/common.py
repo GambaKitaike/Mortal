@@ -39,17 +39,22 @@ def drain():
             continue
         return msg['drain_dir']
 
-def submit_param(mortal, dqn, is_idle=False, beta_sel=0.0):
+def submit_param(mortal, head, is_idle=False, beta_sel=0.0, *, use_ppo=False):
     remote = (config['online']['remote']['host'], config['online']['remote']['port'])
+    payload = {
+        'type': 'submit_param',
+        'mortal': mortal.state_dict(),
+        'is_idle': is_idle,
+        'beta_sel': beta_sel,
+    }
+    if use_ppo:
+        payload['actor_critic'] = head.state_dict()
+        payload['ppo'] = True
+    else:
+        payload['dqn'] = head.state_dict()
     with socket.socket() as conn:
         conn.connect(remote)
-        send_msg(conn, {
-            'type': 'submit_param',
-            'mortal': mortal.state_dict(),
-            'dqn': dqn.state_dict(),
-            'is_idle': is_idle,
-            'beta_sel': beta_sel,
-        })
+        send_msg(conn, payload)
 
 def send_msg(conn: socket.socket, msg, packed=False):
     if packed:

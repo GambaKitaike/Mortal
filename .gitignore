@@ -7,6 +7,7 @@ __pycache__
 *.exe
 *.so
 *.pth
+*.Zone.Identifier
 
 .ipynb_checkpoints
 *.ipynb

@@ -77,6 +77,7 @@ def main():
         env = OneVsThree(
             disable_progress_bar = False,
             log_dir = log_dir,
+            enable_west_round = config['env']['enable_west_round'],
         )
         if use_akochan:
             rankings = env.ako_vs_py(

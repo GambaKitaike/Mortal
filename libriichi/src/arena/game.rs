@@ -14,6 +14,14 @@ pub struct BatchGame {
     pub length: u8,
     pub init_scores: [i32; 4],
     pub disable_progress_bar: bool,
+    /// Stage2 赤濃縮 (stage2_design.md §2). 0.0 (default) is a no-op: applies
+    /// uniformly to every game in the batch, targeting whichever seat is
+    /// occupied by agent_idx 0 (the "trainee"/"challenger" by this codebase's
+    /// convention, see `run`).
+    pub p_enrich: f64,
+    /// 西入の無効化 (parlor_rule_west_round_design.md W1)。
+    /// `false` (既定) が天鳳準拠 = 現行挙動。
+    pub disable_west_round: bool,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -29,6 +37,11 @@ struct Game {
     length: u8,
     seed: (u64, u64),
     indexes: [Index; 4],
+    // Stage2 赤濃縮 (stage2_design.md §2): applies only to trainee_seat, and
+    // only when p_enrich > 0.0 (eval/opponent-only batches leave both at
+    // their Default, i.e. 0.0 / None, which is a byte-exact no-op).
+    p_enrich: f64,
+    trainee_seat: Option<u8>,
 
     oracle_obs_versions: [Option<u32>; 4],
     invisible_state_cache: [Option<Array2<f32>>; 4],
@@ -44,6 +57,14 @@ struct Game {
 
     kyoku_started: bool,
     ended: bool,
+    /// 西入（サドンデス）を無効化する = 南4 終了でそのまま終局する。
+    /// フリー雀荘ルールでは西入を通常採用しない
+    /// (`freeparlor/docs/design/parlor_rule_west_round_design.md` W1)。
+    ///
+    /// **`Game` は `Default` を derive しているので、既定値 (`false`) が
+    /// 天鳳準拠 = 現行挙動になる向きで持つこと**（`enable_` にすると
+    /// `..Default::default()` 経由の構築が黙ってルールを変えてしまう）。
+    disable_west_round: bool,
     /// Used in 西入 where the oya and another player get to 30000 at the same
     /// time, but the game continues because oya is not the top.
     ///
@@ -66,10 +87,14 @@ impl Game {
             // or, after all-last
             //   and, oya is not in renchan (if oya is in renchan, it would already have been ended in the renchan owari check)
             //   and, anyone has more than 30k
+            // 西入を無効化した場合は、南4 終了時に点数を問わず終局する
+            // (親の連荘条件は変更しない = 本家のまま。雀荘ごとの差異は
+            //  parlor_rule_west_round_design.md §6-2 で未決)
             if self.kyoku >= self.length + 4
                 || self.kyoku >= self.length
                     && !self.in_renchan
-                    && self.scores.iter().any(|&s| s >= 30000)
+                    && (self.disable_west_round
+                        || self.scores.iter().any(|&s| s >= 30000))
             {
                 self.ended = true;
                 return Ok(());
@@ -82,7 +107,7 @@ impl Game {
                 scores: self.scores,
                 ..Default::default()
             };
-            next_board.init_from_seed(self.seed);
+            next_board.init_from_seed_enriched(self.seed, self.p_enrich, self.trainee_seat);
             self.board = next_board.into_state();
             self.kyoku_started = true;
         }
@@ -224,6 +249,8 @@ impl BatchGame {
             length: 8,
             init_scores: [25000; 4],
             disable_progress_bar,
+            p_enrich: 0.0,
+            disable_west_round: false,
         }
     }
 
@@ -247,11 +274,22 @@ impl BatchGame {
             .zip(seeds)
             .enumerate()
             .map(|(game_idx, (idxs, &seed))| {
+                let split = ["a", "b", "c", "d"][game_idx % 4];
+                // Decimal key matches json.gz log filename ({seed}_{key}_{split}).
+                let game_key = format!("{}_{}_{}", seed.0, seed.1, split);
                 let mut oracle_obs_versions = [None; 4];
                 for (i, idx) in idxs.iter().enumerate() {
-                    agents[idx.agent_idx].start_game(idx.player_id_idx)?;
+                    agents[idx.agent_idx].start_game(idx.player_id_idx, &game_key)?;
                     oracle_obs_versions[i] = agents[idx.agent_idx].oracle_obs_version();
                 }
+
+                // agent_idx 0 is the "trainee"/"challenger" by this codebase's
+                // convention (see `OneVsThree::run_batch`, `TwoVsTwo::run_batch`);
+                // p_enrich only ever targets that seat.
+                let trainee_seat = idxs
+                    .iter()
+                    .position(|idx| idx.agent_idx == 0)
+                    .map(|p| p as u8);
 
                 let game = Box::new(Game {
                     length: self.length,
@@ -259,6 +297,9 @@ impl BatchGame {
                     indexes: *idxs,
                     scores: self.init_scores,
                     oracle_obs_versions,
+                    p_enrich: self.p_enrich,
+                    trainee_seat,
+                    disable_west_round: self.disable_west_round,
                     ..Default::default()
                 });
                 Ok((game_idx, game))

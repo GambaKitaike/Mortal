@@ -44,6 +44,10 @@ struct SyncFields {
     masks: Vec<Array1<bool>>,
     action_idxs: Vec<usize>,
     kan_action_idxs: Vec<Option<usize>>,
+    game_keys: Vec<Option<String>>,
+    step_seqs: Vec<u32>,
+    kyoku_counters: Vec<u8>,
+    step_metas: Vec<(String, u32, bool, u8)>,
 }
 
 impl MortalBatchAgent {
@@ -85,6 +89,10 @@ impl MortalBatchAgent {
             masks: vec![],
             action_idxs: vec![0; size],
             kan_action_idxs: vec![None; size],
+            game_keys: vec![None; size],
+            step_seqs: vec![0; size],
+            kyoku_counters: vec![0; size],
+            step_metas: vec![],
         }));
 
         Ok(Self {
@@ -142,7 +150,8 @@ impl MortalBatchAgent {
                     .collect()
             });
 
-            let args = (states, masks, invisible_states);
+            let step_metas = mem::take(&mut sync_fields.step_metas);
+            let args = (states, masks, invisible_states, step_metas);
             self.engine
                 .bind_borrowed(py)
                 .call_method1(intern!(py, "react_batch"), args)
@@ -190,6 +199,21 @@ impl BatchAgent for MortalBatchAgent {
     #[inline]
     fn name(&self) -> String {
         self.name.clone()
+    }
+
+    #[inline]
+    fn start_game(&mut self, index: usize, game_key: &str) -> Result<()> {
+        let mut sync_fields = self.sync_fields.lock();
+        sync_fields.game_keys[index] = Some(game_key.to_string());
+        sync_fields.step_seqs[index] = 0;
+        sync_fields.kyoku_counters[index] = 0;
+        Ok(())
+    }
+
+    fn end_kyoku(&mut self, index: usize) -> Result<()> {
+        let mut sync_fields = self.sync_fields.lock();
+        sync_fields.kyoku_counters[index] = sync_fields.kyoku_counters[index].saturating_add(1);
+        Ok(())
     }
 
     #[inline]
@@ -241,7 +265,7 @@ impl BatchAgent for MortalBatchAgent {
             }
         }
 
-        let need_kan_select = if !cans.can_ankan && !cans.can_kakan {
+        let need_kan_select = if !(cans.can_ankan || cans.can_kakan) {
             false
         } else if !self.enable_quick_eval {
             true
@@ -268,16 +292,35 @@ impl BatchAgent for MortalBatchAgent {
                 masks,
                 action_idxs,
                 kan_action_idxs,
+                game_keys,
+                step_seqs,
+                kyoku_counters,
+                step_metas,
             } = &mut *sync_fields.lock();
+            let game_key = game_keys
+                .get(index)
+                .and_then(|k| k.clone())
+                .unwrap_or_default();
+            let at_kyoku = kyoku_counters[index];
             if let Some((kan_feature, kan_mask)) = kan {
+                let seq = step_seqs[index];
+                step_metas.push((game_key.clone(), seq, true, at_kyoku));
                 kan_action_idxs[index] = Some(states.len());
                 states.push(kan_feature);
                 masks.push(kan_mask);
                 if let Some(invisible_state) = invisible_state.clone() {
                     invisible_states.push(invisible_state);
                 }
+                if !game_key.is_empty() {
+                    step_seqs[index] = seq + 1;
+                }
             }
 
+            let seq = step_seqs[index];
+            step_metas.push((game_key.clone(), seq, true, at_kyoku));
+            if !game_key.is_empty() {
+                step_seqs[index] = seq + 1;
+            }
             action_idxs[index] = states.len();
             states.push(feature);
             masks.push(mask);
@@ -317,6 +360,7 @@ impl BatchAgent for MortalBatchAgent {
         let cans = state.last_cans();
 
         let orig_action = self.actions[action_idx];
+        let masks = self.masks_recv[action_idx];
         let action =
             if self.enable_rule_based_agari_guard && orig_action == 43 && !state.rule_based_agari()
             {
@@ -325,12 +369,18 @@ impl BatchAgent for MortalBatchAgent {
                 // the best alternative option other than agari.
                 let mut q_values = self.q_values[action_idx];
                 q_values[43] = f32::MIN;
-                q_values
+                let guarded = q_values
                     .iter()
                     .enumerate()
+                    .filter(|&(i, _)| masks[i])
                     .max_by(|(_, l), (_, r)| l.total_cmp(r))
-                    .unwrap()
-                    .0
+                    .map(|(i, _)| i)
+                    .unwrap_or(orig_action);
+                eprintln!(
+                    "[agari_guard] player={actor} orig=43 -> {guarded} ({})",
+                    state.brief_info()
+                );
+                guarded
             } else {
                 orig_action
             };

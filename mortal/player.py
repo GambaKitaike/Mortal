@@ -85,6 +85,7 @@ class TestPlayer:
         env = OneVsThree(
             disable_progress_bar = False,
             log_dir = self.log_dir,
+            enable_west_round = config['env']['enable_west_round'],
         )
         champion = engine_chal if self.self_play else self.baseline_engine
         env.py_vs_py(
@@ -92,6 +93,88 @@ class TestPlayer:
             champion = champion,
             seed_start = (10000, 0x2000),
             seed_count = seed_count,
+        )
+
+        stat = Stat.from_dir(self.log_dir, 'mortal')
+        self._last_chip_realize = self._compute_chip_realize(self.log_dir)
+        torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
+        return stat
+
+    def _make_ppo_eval_engine(self, mortal, actor_critic, device, *, name='mortal'):
+        from ppo_engine import PPOEngine
+        return PPOEngine(
+            mortal,
+            actor_critic,
+            is_oracle=False,
+            version=self.chal_version,
+            device=device,
+            enable_amp=False,
+            enable_quick_eval=False,
+            enable_rule_based_agari_guard=True,
+            name=name,
+            eval_mode=True,
+            record_trajectory=False,
+        )
+
+    def _clone_ppo_eval_engine(self, mortal, actor_critic, device, *, name='mortal'):
+        from model import ActorCritic, Brain
+        from ppo_engine import PPOEngine
+
+        clone_m = Brain(version=self.chal_version, **config['resnet']).to(device).eval()
+        clone_ac = ActorCritic(
+            version=self.chal_version,
+            tau=config['ppo']['tau_init'],
+        ).to(device).eval()
+        clone_m.load_state_dict(mortal.state_dict())
+        clone_ac.load_state_dict(actor_critic.state_dict())
+        return PPOEngine(
+            clone_m,
+            clone_ac,
+            is_oracle=False,
+            version=self.chal_version,
+            device=device,
+            enable_amp=False,
+            enable_quick_eval=False,
+            enable_rule_based_agari_guard=True,
+            name=name,
+            eval_mode=True,
+            record_trajectory=False,
+        )
+
+    def test_play_ppo(
+        self,
+        seed_count,
+        mortal,
+        actor_critic,
+        device,
+        *,
+        seed_start=(10000, 0x2000),
+        clear_log_dir=True,
+    ):
+        torch.backends.cudnn.benchmark = False
+        engine_chal = self._make_ppo_eval_engine(mortal, actor_critic, device, name='mortal')
+
+        if clear_log_dir:
+            if path.isdir(self.log_dir):
+                shutil.rmtree(self.log_dir)
+        else:
+            os.makedirs(self.log_dir, exist_ok=True)
+
+        env = OneVsThree(
+            disable_progress_bar=False,
+            log_dir=self.log_dir,
+            enable_west_round=config['env']['enable_west_round'],
+        )
+        if self.self_play:
+            # challenger/champion は別インスタンス必須（arena 並列が同一 engine を叩く）
+            champion = self._clone_ppo_eval_engine(mortal, actor_critic, device, name='mortal_clone')
+        else:
+            champion = self.baseline_engine
+        env.py_vs_py(
+            challenger=engine_chal,
+            champion=champion,
+            seed_start=seed_start,
+            seed_count=seed_count,
         )
 
         stat = Stat.from_dir(self.log_dir, 'mortal')
@@ -137,12 +220,82 @@ class TrainPlayer:
         self.train_seed = 10000
 
         self.seed_count = cfg['games'] // 4
-        self.boltzmann_epsilon = cfg['boltzmann_epsilon']
-        self.boltzmann_temp = cfg['boltzmann_temp']
-        self.top_p = cfg['top_p']
+        self.boltzmann_epsilon = cfg.get('boltzmann_epsilon', 0.0)
+        self.boltzmann_temp = cfg.get('boltzmann_temp', 0.05)
+        self.top_p = cfg.get('top_p', 1.0)
 
         self.repeats = cfg['repeats']
         self.repeat_counter = 0
+
+        # 訓練 rollout の乱数系列を記録する（観測のみ・学習には一切影響しない）。
+        # train_key は secrets.randbits(64) = OS エントロピーなので client ごと・run ごとに
+        # 独立で、これが「同一 config の run 間ばらつき」の源。従来どこにも記録されておらず
+        # (a) 2 本の run が別 seed だったことの事後検証も (b) run の再現も不可能だった
+        # （`docs/design/l1_o1_submit_every_design.md` §5a、Gamba 裁定 2026-07-30）。
+        # eval 経路には現れない（TrainPlayer は訓練 client 専用）。
+        logging.info(
+            f'train rollout seeds: profile={profile} train_key=0x{self.train_key:016x} '
+            f'train_seed={self.train_seed} seed_count={self.seed_count} repeats={self.repeats}'
+        )
+
+        pool_cfg = config.get('opponent_pool', {})
+        self.opponent_pool_enabled = bool(pool_cfg.get('enabled', False))
+        self._opp_pool_cfg = pool_cfg
+
+    def _make_opponent_engine(self, device):
+        if not self.opponent_pool_enabled:
+            return self.baseline_engine
+        from model import Brain, ActorCritic
+        from opponent_pool import OpponentPool
+        from ppo_pool_engine import PPOOpponentPoolEngine
+
+        run_dir = path.dirname(path.dirname(self.log_dir))
+        ckpt_dir = path.join(run_dir, 'checkpoints')
+        init0 = path.join(ckpt_dir, 'step_000000.pth')
+        fallback = init0 if path.isfile(init0) else config['ppo'].get('init_checkpoint')
+        anchor_prob = float(self._opp_pool_cfg.get('anchor_prob', 0.0))
+        anchor_ckpt_raw = self._opp_pool_cfg.get('anchor_checkpoint') or ''
+        anchor_checkpoint = anchor_ckpt_raw if anchor_ckpt_raw else None
+        pool = OpponentPool(
+            ckpt_dir,
+            past_k=int(self._opp_pool_cfg.get('past_k', 5)),
+            latest_prob=float(self._opp_pool_cfg.get('latest_prob', 0.5)),
+            fallback_checkpoint=fallback,
+            anchor_prob=anchor_prob,
+            anchor_checkpoint=anchor_checkpoint,
+        )
+        version = self.chal_version
+        conv_channels = config['resnet']['conv_channels']
+        num_blocks = config['resnet']['num_blocks']
+        brain = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks)
+        actor_critic = ActorCritic(version=version, tau=config['ppo']['tau_init'])
+        from ppo_engine import dump_engine_config
+
+        profile = os.environ.get('TRAIN_PLAY_PROFILE', 'default')
+        run_dir = path.dirname(path.dirname(self.log_dir))
+        draw_log_path = None
+        if anchor_prob > 0.0:
+            draw_log_dir = path.join(run_dir, 'logs')
+            os.makedirs(draw_log_dir, exist_ok=True)
+            draw_log_path = path.join(draw_log_dir, f'pool_draw_{profile}.jsonl')
+
+        opp = PPOOpponentPoolEngine(
+            brain,
+            actor_critic,
+            pool,
+            is_oracle=False,
+            version=version,
+            device=device,
+            enable_amp=True,
+            name='opp_pool',
+            eval_mode=False,
+            draw_log_path=draw_log_path,
+        )
+        opp_cfg = dump_engine_config(opp)
+        logging.info(f'opponent pool engine config dump: {opp_cfg}')
+        assert not opp.enable_rule_based_agari_guard, 'train rollout: pool guard must be OFF'
+        assert not hasattr(opp, 'pending_steps'), 'pool engine must not record trajectories'
+        return opp
 
     def train_play(self, mortal, dqn, device, beta_sel=0.0):
         torch.backends.cudnn.benchmark = False
@@ -166,6 +319,7 @@ class TrainPlayer:
         env = OneVsThree(
             disable_progress_bar = False,
             log_dir = self.log_dir,
+            enable_west_round = config['env']['enable_west_round'],
         )
         rankings = env.py_vs_py(
             challenger = engine_chal,
@@ -179,7 +333,38 @@ class TrainPlayer:
             self.repeat_counter = 0
 
         rankings = np.array(rankings)
-        file_list = list(map(lambda p: path.join(self.log_dir, p), os.listdir(self.log_dir)))
+        file_list = sorted(
+            path.join(self.log_dir, p) for p in os.listdir(self.log_dir)
+        )
+
+        torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
+        return rankings, file_list
+
+    def train_play_ppo(self, engine, device):
+        torch.backends.cudnn.benchmark = False
+        if path.isdir(self.log_dir):
+            shutil.rmtree(self.log_dir)
+
+        env = OneVsThree(
+            disable_progress_bar = False,
+            log_dir = self.log_dir,
+            enable_west_round = config['env']['enable_west_round'],
+        )
+        rankings = env.py_vs_py(
+            challenger = engine,
+            champion = self._make_opponent_engine(device),
+            seed_start = (self.train_seed, self.train_key),
+            seed_count = self.seed_count,
+        )
+        self.repeat_counter += 1
+        if self.repeat_counter == self.repeats:
+            self.train_seed += self.seed_count
+            self.repeat_counter = 0
+
+        rankings = np.array(rankings)
+        file_list = sorted(
+            path.join(self.log_dir, p) for p in os.listdir(self.log_dir)
+        )
 
         torch.backends.cudnn.benchmark = config['control']['enable_cudnn_benchmark']
         return rankings, file_list
